@@ -1,0 +1,84 @@
+name: montreal-rentals
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: rentals-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-rentals}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rentals_password}
+      POSTGRES_DB: ${POSTGRES_DB:-rentals}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rentals} -d ${POSTGRES_DB:-rentals}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  backend:
+    build:
+      context: ./backend
+    container_name: rentals-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rentals}:${POSTGRES_PASSWORD:-rentals_password}@db:5432/${POSTGRES_DB:-rentals}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      WALK_RADIUS_METERS: ${WALK_RADIUS_METERS:-1200}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    container_name: rentals-frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      INTERNAL_API_URL: http://backend:8000
+      PORT: "3000"
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  scraper:
+    build:
+      context: ./scraper
+    container_name: rentals-scraper
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-rentals}:${POSTGRES_PASSWORD:-rentals_password}@db:5432/${POSTGRES_DB:-rentals}
+      SCRAPE_INTERVAL_HOURS: ${SCRAPE_INTERVAL_HOURS:-6}
+      SCRAPE_MAX_PAGES: ${SCRAPE_MAX_PAGES:-20}
+      SCRAPE_HEADLESS: ${SCRAPE_HEADLESS:-true}
+      SCRAPE_PROXY: ${SCRAPE_PROXY:-}
+      SCRAPE_MIN_DELAY_SECONDS: ${SCRAPE_MIN_DELAY_SECONDS:-2}
+      SCRAPE_MAX_DELAY_SECONDS: ${SCRAPE_MAX_DELAY_SECONDS:-6}
+      SCRAPE_START_URL: ${SCRAPE_START_URL:-https://www.centris.ca/en/properties~for-rent?uc=0}
+      RUN_ON_STARTUP: ${RUN_ON_STARTUP:-true}
+      WALK_RADIUS_METERS: ${WALK_RADIUS_METERS:-1200}
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
