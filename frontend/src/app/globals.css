@@ -1,0 +1,129 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-50 font-sans text-slate-900 antialiased;
+}
+
+/* ---------- Scrollbars ---------- */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+/* ---------- Leaflet overrides ---------- */
+.leaflet-container {
+  font-family: inherit;
+  background: #e5e7eb;
+}
+
+.leaflet-popup-content-wrapper {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.25);
+}
+
+.leaflet-popup-content {
+  margin: 0;
+  line-height: 1.35;
+}
+
+.leaflet-container a.popup-link {
+  color: #ffffff;
+}
+
+.leaflet-container a.popup-link:hover {
+  color: #ffffff;
+}
+
+.leaflet-tooltip {
+  border: none;
+  border-radius: 10px;
+  padding: 6px 9px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
+}
+
+/* ---------- Property price markers ---------- */
+.price-marker {
+  width: 0;
+  height: 0;
+  overflow: visible;
+  background: transparent;
+  border: none;
+}
+
+.price-pill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, calc(-100% - 7px));
+  white-space: nowrap;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  background: #ffffff;
+  color: #0f172a;
+  border: 2px solid var(--pill-color, #475569);
+  font: 700 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.3);
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.price-pill::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  width: 8px;
+  height: 8px;
+  background: inherit;
+  border-right: 2px solid var(--pill-color, #475569);
+  border-bottom: 2px solid var(--pill-color, #475569);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.price-pill:hover {
+  transform: translate(-50%, calc(-100% - 7px)) scale(1.08);
+}
+
+.price-pill.is-selected {
+  background: var(--pill-color, #475569);
+  color: #ffffff;
+  transform: translate(-50%, calc(-100% - 7px)) scale(1.12);
+}
+
+/* ---------- Station markers ---------- */
+.station-marker-icon {
+  background: transparent;
+  border: none;
+}
+
+.station-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1.5px rgba(15, 23, 42, 0.55), 0 1px 4px rgba(0, 0, 0, 0.35);
+  color: #ffffff;
+  font: 800 11px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.75);
+}
+
+.station-metro {
+  border-radius: 9999px;
+}
+
+.station-rem {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+}
