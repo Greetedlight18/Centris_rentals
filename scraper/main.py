@@ -117,8 +117,6 @@ BASE_URL = "https://www.centris.ca"
 DEFAULT_GENERIC_START_URL = "https://www.centris.ca/en/properties~for-rent?uc=0"
 GREATER_MONTREAL_START_URLS = [
     "https://www.centris.ca/en/properties~for-rent~montreal-island",
-    "https://www.centris.ca/en/properties~for-rent~laval",
-    "https://www.centris.ca/en/properties~for-rent~longueuil",
     "https://www.centris.ca/en/properties~for-rent~brossard",
 ]
 
