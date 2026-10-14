@@ -18,6 +18,7 @@ import os
 import random
 import re
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -1568,6 +1569,30 @@ def run_cycle() -> None:
 # =====================================================================
 # 6. Scheduler
 # =====================================================================
+def start_virtual_display() -> None:
+    """Start Xvfb for headed Chromium. Not needed (and skipped) in headless mode."""
+    if SCRAPE_HEADLESS:
+        return
+    display = ":99"
+    try:
+        subprocess.Popen(
+            ["Xvfb", display, "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        logger.error("Could not start Xvfb: %s", exc)
+        return
+    socket_path = Path("/tmp/.X11-unix/X99")
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if socket_path.exists():
+            os.environ["DISPLAY"] = display
+            logger.info("Virtual display started on %s", display)
+            return
+        time.sleep(0.25)
+    logger.error("Xvfb did not become ready within 15 seconds")
+
 def handle_signal(signum: int, _frame: Any) -> None:
     logger.info("Received signal %s, shutting down", signum)
     STOP.set()
@@ -1576,6 +1601,8 @@ def handle_signal(signum: int, _frame: Any) -> None:
 def main() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
+    logger.info("Scraper process started (pid %s)", os.getpid())
+    start_virtual_display()
 
     try:
         wait_for_database()
