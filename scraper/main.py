@@ -100,6 +100,7 @@ SCRAPE_START_URL = env_str("SCRAPE_START_URL", "https://www.centris.ca/en/proper
 SCRAPE_START_URLS = env_str("SCRAPE_START_URLS", "")
 MAX_DETAILS_PER_RUN = max(0, env_int("SCRAPE_MAX_DETAILS_PER_RUN", 300))
 MAX_BLOCK_RETRIES = max(1, env_int("SCRAPE_MAX_BLOCK_RETRIES", 3))
+STALE_AFTER_DAYS = max(1.0, env_float("SCRAPE_STALE_AFTER_DAYS", 7.0))
 GEOCODE_FALLBACK = env_bool("GEOCODE_FALLBACK", True)
 STATION_SYNC_MODE = env_str("STATION_SYNC_MODE", "auto").lower()
 STATION_MAX_DRIFT_METERS = env_float("STATION_MAX_DRIFT_METERS", 8000.0)
@@ -511,6 +512,45 @@ NEXT_SELECTORS = [
     "a[title*='Suivant' i]",
     "button[aria-label*='Next' i]",
 ]
+
+FIND_NEXT_JS = r"""
+() => {
+  document.querySelectorAll('[data-scraper-next]').forEach((el) => el.removeAttribute('data-scraper-next'));
+  const visible = (el) => {
+    const rect = el.getBoundingClientRect();
+    const style = window.getComputedStyle(el);
+    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+  };
+  const classOf = (el) => (el && el.className ? String(el.className) : '').toLowerCase();
+  const disabled = (el) => {
+    const parent = el.parentElement;
+    return /disabled|inactive/.test(classOf(el) + ' ' + classOf(parent))
+      || el.getAttribute('aria-disabled') === 'true'
+      || el.hasAttribute('disabled');
+  };
+  const insideCard = (el) => !!el.closest(
+    '.property-thumbnail-item, .thumbnailItem, [class*="thumbnail"], [class*="carousel"], [class*="slider"]'
+  );
+  const nextText = /^\s*(next|suivant|next page|page suivante|›|»|>|→)\s*$/i;
+  const nextWord = /(^|[\s_-])(next|suivant)([\s_-]|$)/i;
+  const inPager = (el) => !!el.closest('[class*="pag" i], [id*="pag" i], nav');
+
+  const matches = [];
+  for (const el of Array.from(document.querySelectorAll('a, button, li'))) {
+    const text = (el.innerText || '').trim();
+    const label = [el.getAttribute('aria-label'), el.getAttribute('title'), el.getAttribute('rel')]
+      .filter(Boolean).join(' ');
+    if (!(nextText.test(text) || nextWord.test(label) || nextWord.test(classOf(el)))) continue;
+    const target = el.tagName === 'LI' ? (el.querySelector('a, button') || el) : el;
+    if (insideCard(target) || !visible(target) || disabled(target) || disabled(el)) continue;
+    matches.push(target);
+  }
+  const pick = matches.find(inPager) || matches[0];
+  if (!pick) return null;
+  pick.setAttribute('data-scraper-next', '1');
+  return pick.outerHTML.slice(0, 300);
+}
+"""
 
 
 def parse_proxy(value: str) -> Optional[dict[str, str]]:
@@ -1161,48 +1201,93 @@ def resolve_start_urls() -> list[str]:
 
 def advance_via_dom(session: BrowserSession, previous_ids: tuple[str, ...]) -> Optional[str]:
     page = session.require_page()
+    url_before = page.url
+
+    targets: list[tuple[str, Any]] = []
     for selector in NEXT_SELECTORS:
         try:
             locator = page.locator(selector).first
-            if locator.count() == 0 or not locator.is_visible():
-                continue
+            if locator.count() > 0 and locator.is_visible():
+                targets.append((selector, locator))
+        except PlaywrightError:
+            continue
+
+    try:
+        descriptor = page.evaluate(FIND_NEXT_JS)
+    except PlaywrightError:
+        descriptor = None
+    if descriptor:
+        targets.append(
+            (f"heuristic match {descriptor[:160]!r}", page.locator("[data-scraper-next='1']").first)
+        )
+
+    if not targets:
+        logger.warning("No next-page control found on the results page")
+        dump_debug(page, "pager_not_found")
+        return None
+
+    for label, locator in targets:
+        try:
             locator.scroll_into_view_if_needed(timeout=5000)
             human_mouse(page)
             locator.click(timeout=8000)
         except StopRequested:
             raise
-        except PlaywrightError:
+        except PlaywrightError as exc:
+            logger.info("Could not click next-page control (%s): %s", label, exc)
             continue
+
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             interruptible_sleep(1.0)
-            html = page.content()
+            try:
+                html = page.content()
+            except PlaywrightError:
+                continue
             ids = card_ids(html)
             if ids and ids != previous_ids:
                 session.assert_not_blocked()
                 return html
-        logger.info("Next-page click via '%s' did not change the results", selector)
+        logger.info("Next-page click did not change the results (%s)", label)
+        if page.url != url_before:
+            try:
+                page.go_back(wait_until="domcontentloaded")
+                session.settle(page, CARD_WAIT_SELECTOR)
+            except PlaywrightError:
+                pass
+
+    dump_debug(page, "pager_click_no_change")
     return None
 
 
-def advance_via_fetch(session: BrowserSession, start_position: int) -> Optional[str]:
+def advance_via_fetch(session: BrowserSession, start_position: int) -> tuple[Optional[str], bool]:
+    """Returns (html, reached_end). reached_end is True only when the endpoint
+    answered validly and had no further results."""
     page = session.require_page()
     try:
         result = page.evaluate(FETCH_PAGE_JS, start_position)
     except PlaywrightError as exc:
-        logger.info("In-page pagination fetch failed: %s", exc)
-        return None
+        logger.warning("In-page pagination fetch failed: %s", exc)
+        return None, False
+
     status = result.get("status")
+    text = result.get("text") or ""
     if status in (403, 429, 503):
         raise BlockedError(f"HTTP {status} from pagination endpoint")
     if status != 200:
-        return None
+        logger.warning("Pagination endpoint returned HTTP %s: %s", status, text[:200])
+        return None, False
+
     try:
-        payload = json.loads(result.get("text") or "")
+        payload = json.loads(text)
         html = payload["d"]["Result"]["html"]
     except (json.JSONDecodeError, KeyError, TypeError):
-        return None
-    return html if isinstance(html, str) and html.strip() else None
+        logger.warning("Pagination endpoint returned an unexpected body: %s", text[:300])
+        return None, False
+
+    if not isinstance(html, str) or not html.strip():
+        return None, True
+    return html, False
 
 
 def scrape_search(session: BrowserSession, url: str) -> tuple[list[Card], bool]:
@@ -1225,6 +1310,7 @@ def scrape_search(session: BrowserSession, url: str) -> tuple[list[Card], bool]:
     use_fetch = False
     current_html = html
     complete = False
+    label = url.rsplit("/", 1)[-1]
 
     while True:
         check_stop()
@@ -1234,7 +1320,7 @@ def scrape_search(session: BrowserSession, url: str) -> tuple[list[Card], bool]:
             collected[card.centris_id] = card
         logger.info(
             "%s page %s: %s cards (%s new, %s total)",
-            url.rsplit("/", 1)[-1],
+            label,
             page_number,
             len(cards),
             len(fresh),
@@ -1251,21 +1337,28 @@ def scrape_search(session: BrowserSession, url: str) -> tuple[list[Card], bool]:
         polite_sleep()
         previous_ids = tuple(c.centris_id for c in cards)
         next_html: Optional[str] = None
+        reached_end = False
 
         if not use_fetch:
-            next_html = with_block_retries(
-                session, "search_next", lambda: advance_via_dom(session, previous_ids)
-            )
+            next_html = advance_via_dom(session, previous_ids)
             if next_html is None:
-                next_html = advance_via_fetch(session, page_number * page_size)
+                next_html, reached_end = advance_via_fetch(session, page_number * page_size)
                 if next_html is not None:
                     logger.info("Switched to in-page fetch pagination")
                     use_fetch = True
         else:
-            next_html = advance_via_fetch(session, page_number * page_size)
+            next_html, reached_end = advance_via_fetch(session, page_number * page_size)
 
         if next_html is None:
-            complete = True
+            if reached_end:
+                complete = True
+            else:
+                logger.warning(
+                    "Pagination stopped after page %s for %s: no next-page method worked. "
+                    "Results are INCOMPLETE (see /app/debug for a page snapshot).",
+                    page_number,
+                    label,
+                )
             break
         if not parse_cards(next_html):
             complete = True
@@ -1518,14 +1611,39 @@ def execute_scrape(
         finally:
             session.close()
 
-    if all_complete and cards:
+    if not cards:
+        return
+
+    active_total = conn.execute(
+        "SELECT COUNT(*) AS n FROM properties WHERE is_active = TRUE"
+    ).fetchone()["n"]
+
+    if not all_complete:
+        logger.warning("Skipping stale-listing deactivation: not every search was fully paginated")
+        stats.warnings.append("Incomplete pagination; listings were not deactivated this run")
+    elif active_total > 0 and len(cards) < 0.5 * active_total:
+        logger.warning(
+            "Skipping deactivation: only %s listings seen vs %s active (looks like a partial scrape)",
+            len(cards),
+            active_total,
+        )
+        stats.warnings.append("Partial scrape detected; listings were not deactivated this run")
+    else:
         result = conn.execute(
             "UPDATE properties SET is_active = FALSE WHERE is_active = TRUE AND scraped_at < %s",
             (run_started,),
         )
         logger.info("Marked %s listings as no longer active", result.rowcount)
-    else:
-        logger.info("Skipping stale-listing deactivation (run incomplete or capped)")
+
+    aged = conn.execute(
+        "UPDATE properties SET is_active = FALSE "
+        "WHERE is_active = TRUE AND scraped_at < NOW() - (%s * INTERVAL '1 day')",
+        (STALE_AFTER_DAYS,),
+    )
+    if aged.rowcount:
+        logger.info(
+            "Deactivated %s listings not seen for %s days", aged.rowcount, STALE_AFTER_DAYS
+        )
 
 
 def run_cycle() -> None:
