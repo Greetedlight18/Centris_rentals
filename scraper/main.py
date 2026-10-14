@@ -706,6 +706,12 @@ class BrowserSession:
     def dismiss_overlays(self) -> None:
         page = self.require_page()
         try:
+            # Force-remove the Didomi cookie banner from the DOM so it stops blocking clicks
+            page.evaluate("""() => {
+                const didomi = document.getElementById('didomi-host');
+                if (didomi) didomi.remove();
+            }""")
+            
             buttons = page.get_by_role("button", name=CONSENT_BUTTON_PATTERN)
             if buttons.count() > 0 and buttons.first.is_visible():
                 buttons.first.click(timeout=2500)
