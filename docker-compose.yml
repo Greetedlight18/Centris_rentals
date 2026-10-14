@@ -79,7 +79,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      volumes:
+    volumes:
       - ./scraper/debug:/app/debug
 
 volumes:
