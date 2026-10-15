@@ -72,6 +72,7 @@ class Property(BaseModel):
     price: Optional[float] = None
     bedrooms: Optional[int] = None
     bathrooms: Optional[int] = None
+    net_area_sqft: Optional[int] = None
     parking_available: bool
     address: Optional[str] = None
     city: Optional[str] = None
@@ -294,6 +295,7 @@ async def list_properties(
                price,
                bedrooms,
                bathrooms,
+               net_area_sqft,
                parking_available,
                address,
                city,

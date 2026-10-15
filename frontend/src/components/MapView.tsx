@@ -13,9 +13,10 @@ import {
   useMap,
   useMapEvents,
 } from "react-leaflet";
-import { Bath, BedDouble, Car, ExternalLink, Footprints } from "lucide-react";
+import { Bath, BedDouble, Car, ExternalLink, Footprints, Ruler } from "lucide-react";
 import type { Network, Property, Station } from "@/services/api";
 import {
+  formatArea,
   formatBathrooms,
   formatBedrooms,
   formatPrice,
@@ -178,6 +179,7 @@ const PropertyMarker = memo(function PropertyMarker({
     [onSelect, property.id],
   );
   const walk = formatWalk(property.walk_minutes, property.nearest_station_distance_m);
+  const area = formatArea(property.net_area_sqft);
   const address = [
     property.address,
     property.city && !property.address?.includes(property.city) ? property.city : null,
@@ -221,7 +223,7 @@ const PropertyMarker = memo(function PropertyMarker({
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-3 text-sm text-slate-700">
+             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-700">
               <span className="inline-flex items-center gap-1">
                 <BedDouble className="h-4 w-4 text-slate-400" aria-hidden="true" />
                 {formatBedrooms(property.bedrooms)}
@@ -230,6 +232,12 @@ const PropertyMarker = memo(function PropertyMarker({
                 <Bath className="h-4 w-4 text-slate-400" aria-hidden="true" />
                 {formatBathrooms(property.bathrooms)}
               </span>
+              {area && (
+                <span className="inline-flex items-center gap-1" title="Net area">
+                  <Ruler className="h-4 w-4 text-slate-400" aria-hidden="true" />
+                  {area}
+                </span>
+              )}
             </div>
             <div className="text-sm text-slate-600">{address || "Address not available"}</div>
             <div className="rounded-lg bg-slate-50 p-2 text-xs text-slate-700">

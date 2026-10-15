@@ -65,3 +65,8 @@ export function timeAgo(iso: string | null | undefined): string {
   const days = Math.round(hours / 24);
   return `${days} d ago`;
 }
+
+export function formatArea(sqft: number | null | undefined): string | null {
+  if (sqft === null || sqft === undefined || Number.isNaN(sqft)) return null;
+  return `${Math.round(sqft).toLocaleString("en-CA")} sq ft`;
+}

@@ -810,6 +810,8 @@ class DetailInfo:
     parking_available: Optional[bool] = None
     bedrooms: Optional[int] = None
     bathrooms: Optional[int] = None
+    net_area_sqft: Optional[int] = None
+    fetched: bool = False
 
 
 def parse_price(text: Optional[str]) -> Optional[float]:
@@ -845,6 +847,17 @@ def parse_rooms(text: Optional[str]) -> Optional[int]:
         return numbers[0] + numbers[1]
     return numbers[0]
 
+def parse_area_sqft(text: Optional[str]) -> Optional[int]:
+    if not text:
+        return None
+    lowered = text.lower().replace("\u00a0", " ")
+    value = parse_price(lowered)
+    if value is None:
+        return None
+    if re.search(r"m²|m2|\bsq\.?\s*m\b|m[eè]tres?\s+carr", lowered):
+        value *= 10.7639
+    area = int(round(value))
+    return area if 50 <= area <= 20000 else None
 
 def clean_text(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", (value or "").replace("\u00a0", " ")).strip()
@@ -1088,7 +1101,7 @@ def extract_parking(soup: BeautifulSoup) -> Optional[bool]:
 
 def parse_detail(html: str) -> DetailInfo:
     soup = BeautifulSoup(html, "lxml")
-    info = DetailInfo()
+    info = DetailInfo(fetched=True)
 
     coords = extract_coordinates(soup, html)
     if coords:
@@ -1114,8 +1127,19 @@ def parse_detail(html: str) -> DetailInfo:
             info.bedrooms = parse_rooms(value)
         if info.bathrooms is None and ("bathroom" in title or "salle de bain" in title):
             info.bathrooms = parse_rooms(value)
-    return info
+        if info.net_area_sqft is None and ("net area" in title or "superficie nette" in title):
+            info.net_area_sqft = parse_area_sqft(value)
 
+    if info.net_area_sqft is None:
+        page_text = clean_text(soup.get_text(" ", strip=True))
+        area_match = re.search(
+            r"(?:net area|superficie nette)\s*[:\-]?\s*(\d[\d\s.,]*\s*(?:sq\.?\s*ft|sqft|pi²|pi2|m²|m2))",
+            page_text,
+            re.I,
+        )
+        if area_match:
+            info.net_area_sqft = parse_area_sqft(area_match.group(1))
+    return info
 
 # ---------------------------------------------------------------------
 # Geocoding fallback (Nominatim, 1 request/second max)
@@ -1395,14 +1419,16 @@ def fetch_detail(session: BrowserSession, card: Card) -> DetailInfo:
 UPSERT_SQL = """
 INSERT INTO properties (
     centris_id, title, property_type, price, bedrooms, bathrooms, parking_available,
-    address, city, location, url, image_url, is_active, scraped_at
+    net_area_sqft, address, city, location, url, image_url, is_active, scraped_at,
+    detail_scraped_at
 )
 VALUES (
     %(centris_id)s, %(title)s, %(property_type)s, %(price)s, %(bedrooms)s, %(bathrooms)s,
-    %(parking)s, %(address)s, %(city)s,
+    %(parking)s, %(net_area_sqft)s, %(address)s, %(city)s,
     CASE WHEN %(lat)s::float8 IS NULL OR %(lon)s::float8 IS NULL THEN NULL
          ELSE ST_SetSRID(ST_MakePoint(%(lon)s::float8, %(lat)s::float8), 4326)::geography END,
-    %(url)s, %(image_url)s, TRUE, NOW()
+    %(url)s, %(image_url)s, TRUE, NOW(),
+    CASE WHEN %(detail_fetched)s::boolean THEN NOW() ELSE NULL END
 )
 ON CONFLICT (centris_id) DO UPDATE SET
     title             = COALESCE(EXCLUDED.title, properties.title),
@@ -1410,26 +1436,18 @@ ON CONFLICT (centris_id) DO UPDATE SET
     price             = COALESCE(EXCLUDED.price, properties.price),
     bedrooms          = COALESCE(EXCLUDED.bedrooms, properties.bedrooms),
     bathrooms         = COALESCE(EXCLUDED.bathrooms, properties.bathrooms),
-    parking_available = EXCLUDED.parking_available,
+    parking_available = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                             THEN EXCLUDED.parking_available
+                             ELSE properties.parking_available END,
+    net_area_sqft     = COALESCE(EXCLUDED.net_area_sqft, properties.net_area_sqft),
     address           = COALESCE(EXCLUDED.address, properties.address),
     city              = COALESCE(EXCLUDED.city, properties.city),
     location          = COALESCE(EXCLUDED.location, properties.location),
     url               = EXCLUDED.url,
     image_url         = COALESCE(EXCLUDED.image_url, properties.image_url),
     is_active         = TRUE,
-    scraped_at        = NOW()
-"""
-
-CARD_UPDATE_SQL = """
-UPDATE properties
-   SET price         = COALESCE(%(price)s::numeric, price),
-       title         = COALESCE(%(title)s::text, title),
-       property_type = COALESCE(%(property_type)s::text, property_type),
-       image_url     = COALESCE(%(image_url)s::text, image_url),
-       url           = %(url)s,
-       is_active     = TRUE,
-       scraped_at    = NOW()
- WHERE centris_id = %(centris_id)s
+    scraped_at        = NOW(),
+    detail_scraped_at = COALESCE(EXCLUDED.detail_scraped_at, properties.detail_scraped_at)
 """
 
 
@@ -1461,6 +1479,8 @@ def upsert_listing(conn: psycopg.Connection, card: Card, detail: DetailInfo) -> 
             "bedrooms": detail.bedrooms if detail.bedrooms is not None else card.bedrooms,
             "bathrooms": detail.bathrooms if detail.bathrooms is not None else card.bathrooms,
             "parking": bool(detail.parking_available),
+            "net_area_sqft": detail.net_area_sqft,
+            "detail_fetched": detail.fetched,
             "lat": lat,
             "lon": lon,
         }
@@ -1509,13 +1529,15 @@ def process_cards(
     ids = list(cards.keys())
     existing_rows = conn.execute(
         """
-        SELECT centris_id, (location IS NOT NULL) AS has_location
+        SELECT centris_id,
+               (location IS NOT NULL) AS has_location,
+               (detail_scraped_at IS NOT NULL) AS has_detail
           FROM properties
          WHERE centris_id = ANY(%s)
         """,
         (ids,),
     ).fetchall()
-    existing = {row["centris_id"]: row["has_location"] for row in existing_rows}
+    existing = {row["centris_id"]: row for row in existing_rows}
 
     # Refresh price / image / last-seen for everything already stored.
     refreshed = 0
@@ -1527,7 +1549,11 @@ def process_cards(
     logger.info("Refreshed %s known listings from search cards", refreshed)
 
     new_cards = [c for cid, c in cards.items() if cid not in existing]
-    retry_cards = [cards[cid] for cid, has_loc in existing.items() if not has_loc]
+    retry_cards = [
+        cards[cid]
+        for cid, row in existing.items()
+        if not row["has_location"] or not row["has_detail"]
+    ]
     targets = (new_cards + retry_cards)[:MAX_DETAILS_PER_RUN]
     deferred = len(new_cards) + len(retry_cards) - len(targets)
     logger.info(

@@ -33,6 +33,7 @@ export interface Property {
   price: number | null;
   bedrooms: number | null;
   bathrooms: number | null;
+  net_area_sqft: number | null;
   parking_available: boolean;
   address: string | null;
   city: string | null;
