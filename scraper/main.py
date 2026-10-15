@@ -1335,7 +1335,7 @@ def scrape_search(session: BrowserSession, url: str) -> tuple[list[Card], bool]:
         raise ScrapeError(f"No listing cards found at {url} (see debug snapshot)")
 
     collected: dict[str, Card] = {}
-    page_size = len(first_cards) or 20
+    page_size = max(len(first_cards), 20)
     page_number = 1
     use_fetch = False
     current_html = html
@@ -1380,7 +1380,7 @@ def scrape_search(session: BrowserSession, url: str) -> tuple[list[Card], bool]:
             next_html, reached_end = advance_via_fetch(session, page_number * page_size)
 
         if next_html is None:
-            if reached_end:
+            if reached_end or len(cards) < page_size:
                 complete = True
             else:
                 logger.warning(
@@ -1449,7 +1449,17 @@ ON CONFLICT (centris_id) DO UPDATE SET
     scraped_at        = NOW(),
     detail_scraped_at = COALESCE(EXCLUDED.detail_scraped_at, properties.detail_scraped_at)
 """
-
+CARD_UPDATE_SQL = """
+UPDATE properties
+   SET price         = COALESCE(%(price)s::numeric, price),
+       title         = COALESCE(%(title)s::text, title),
+       property_type = COALESCE(%(property_type)s::text, property_type),
+       image_url     = COALESCE(%(image_url)s::text, image_url),
+       url           = %(url)s,
+       is_active     = TRUE,
+       scraped_at    = NOW()
+ WHERE centris_id = %(centris_id)s
+"""
 
 def card_params(card: Card) -> dict[str, Any]:
     return {
