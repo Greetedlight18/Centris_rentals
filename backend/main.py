@@ -33,7 +33,7 @@ CORS_ORIGINS = [
 
 WALK_RADIUS_METERS = float(os.environ.get("WALK_RADIUS_METERS", "1200"))
 
-MAX_PAGE_SIZE = 1000
+MAX_PAGE_SIZE = 5000
 
 SORT_CLAUSES = {
     "price_asc": "price ASC NULLS LAST, id ASC",

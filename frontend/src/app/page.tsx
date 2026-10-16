@@ -40,7 +40,7 @@ const MapView = dynamic(() => import("@/components/MapView"), {
   ),
 });
 
-const PAGE_SIZE = 2000;
+const PAGE_SIZE = 300;
 const DEFAULT_WALK_RADIUS_METERS = 1200;
 
 type ViewMode = "map" | "list";
