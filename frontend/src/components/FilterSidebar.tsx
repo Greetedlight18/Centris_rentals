@@ -4,10 +4,12 @@ import {
   ArrowUpDown,
   BedDouble,
   Car,
+  Eye,
   Footprints,
   Layers,
   RotateCcw,
   TrainFront,
+  Trash2,
   Wallet,
 } from "lucide-react";
 import {
@@ -22,12 +24,19 @@ import {
   type PropertyFilters,
   type SortOption,
 } from "@/services/api";
+import type { ViewedFilter } from "@/lib/viewed";
 import { formatPrice, timeAgo } from "@/lib/format";
 
 interface FilterSidebarProps {
   filters: PropertyFilters;
   onChange: (next: PropertyFilters) => void;
   onReset: () => void;
+  viewedFilter: ViewedFilter;
+  onViewedFilterChange: (value: ViewedFilter) => void;
+  seenInResults: number;
+  loadedCount: number;
+  viewedHistoryCount: number;
+  onClearViewed: () => void;
   showStations: boolean;
   onToggleStations: (value: boolean) => void;
   meta: Meta | null;
@@ -145,6 +154,12 @@ const NETWORK_OPTIONS: SegmentedOption<NetworkFilter>[] = [
   { label: "REM", value: "REM" },
 ];
 
+const VIEWED_OPTIONS: SegmentedOption<ViewedFilter>[] = [
+  { label: "All", value: "all" },
+  { label: "Unseen", value: "unseen" },
+  { label: "Seen", value: "seen" },
+];
+
 const SORT_OPTIONS: SegmentedOption<SortOption>[] = [
   { label: "Price: low to high", value: "price_asc" },
   { label: "Price: high to low", value: "price_desc" },
@@ -156,6 +171,12 @@ export default function FilterSidebar({
   filters,
   onChange,
   onReset,
+  viewedFilter,
+  onViewedFilterChange,
+  seenInResults,
+  loadedCount,
+  viewedHistoryCount,
+  onClearViewed,
   showStations,
   onToggleStations,
   meta,
@@ -163,7 +184,18 @@ export default function FilterSidebar({
   loading,
 }: FilterSidebarProps) {
   const priceSliderValue = filters.maxPrice ?? PRICE_MAX;
-  const atDefaults = isDefaultFilters(filters);
+  const atDefaults = isDefaultFilters(filters) && viewedFilter === "all";
+
+  const handleClearViewed = () => {
+    const confirmed = window.confirm(
+      `Clear your seen history? ${viewedHistoryCount} listing${
+        viewedHistoryCount === 1 ? "" : "s"
+      } will go back to unseen.`,
+    );
+    if (confirmed) {
+      onClearViewed();
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6 p-5">
@@ -277,6 +309,30 @@ export default function FilterSidebar({
             </option>
           ))}
         </select>
+      </section>
+
+      <section className="rounded-xl border border-slate-200 p-4">
+        <SectionLabel icon={<Eye className="h-4 w-4" />} title="Seen listings" />
+        <Segmented<ViewedFilter>
+          label="Filter by seen status"
+          options={VIEWED_OPTIONS}
+          value={viewedFilter}
+          onChange={onViewedFilterChange}
+        />
+        <p className="mt-3 text-xs leading-relaxed text-slate-600">
+          {seenInResults} of {loadedCount} loaded listing{loadedCount === 1 ? "" : "s"} marked as
+          seen. Listings turn gray after you open them.
+        </p>
+        <button
+          type="button"
+          onClick={handleClearViewed}
+          disabled={viewedHistoryCount === 0}
+          className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          <Trash2 className="h-4 w-4" aria-hidden="true" />
+          Clear seen history
+          {viewedHistoryCount > 0 && <span className="text-slate-400">({viewedHistoryCount})</span>}
+        </button>
       </section>
 
       <section className="rounded-xl border border-slate-200 p-4">

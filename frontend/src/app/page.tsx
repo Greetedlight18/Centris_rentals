@@ -16,6 +16,7 @@ import EmptyState from "@/components/EmptyState";
 import FilterSidebar from "@/components/FilterSidebar";
 import ListView from "@/components/ListView";
 import type { MapFocus } from "@/components/MapView";
+import { useViewedListings, type ViewedFilter } from "@/lib/viewed";
 import {
   DEFAULT_FILTERS,
   fetchMeta,
@@ -39,7 +40,7 @@ const MapView = dynamic(() => import("@/components/MapView"), {
   ),
 });
 
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 2000;
 const DEFAULT_WALK_RADIUS_METERS = 1200;
 
 type ViewMode = "map" | "list";
@@ -76,6 +77,9 @@ export default function HomePage() {
   const [fitToken, setFitToken] = useState(0);
   const [showStations, setShowStations] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const { viewed, markViewed, markUnviewed, clearViewed } = useViewedListings();
+  const [viewedFilter, setViewedFilter] = useState<ViewedFilter>("all");
 
   const requestRef = useRef<AbortController | null>(null);
   const activeFiltersRef = useRef<PropertyFilters>(DEFAULT_FILTERS);
@@ -177,26 +181,67 @@ export default function HomePage() {
     setSelectedId(id);
   }, []);
 
+  const handleDeselect = useCallback((id: number) => {
+    setSelectedId((previous) => (previous === id ? null : previous));
+  }, []);
+
   const handleShowOnMap = useCallback((id: number) => {
     setSelectedId(id);
     setFocus({ id, token: Date.now() });
     setView("map");
   }, []);
 
-  const handleReset = useCallback(() => {
-    setFilters(DEFAULT_FILTERS);
+  const handleViewedFilterChange = useCallback((value: ViewedFilter) => {
+    setViewedFilter(value);
+    setFitToken((token) => token + 1);
   }, []);
 
+  const handleShowAll = useCallback(() => {
+    setViewedFilter("all");
+    setFitToken((token) => token + 1);
+  }, []);
+
+  const handleReset = useCallback(() => {
+    setFilters(DEFAULT_FILTERS);
+    setViewedFilter("all");
+    setFitToken((token) => token + 1);
+  }, []);
+
+  // The listing that is currently open stays visible even if the seen filter would hide it.
+  const visibleProperties = useMemo(() => {
+    if (viewedFilter === "all") return properties;
+    return properties.filter((property) => {
+      if (property.id === selectedId) return true;
+      const seen = viewed.has(property.centris_id);
+      return viewedFilter === "seen" ? seen : !seen;
+    });
+  }, [properties, viewed, viewedFilter, selectedId]);
+
+  const seenInResults = useMemo(
+    () => properties.reduce((count, property) => count + (viewed.has(property.centris_id) ? 1 : 0), 0),
+    [properties, viewed],
+  );
+
+  const displayTotal = viewedFilter === "all" ? total : visibleProperties.length;
   const hasMore = properties.length < total;
   const filtersActive = !isDefaultFilters(filters);
-  const showEmpty = !loading && !error && properties.length === 0;
+  const hiddenBySeenFilter =
+    viewedFilter !== "all" && properties.length > 0 && visibleProperties.length === 0;
+  const showEmpty = !loading && !error && visibleProperties.length === 0;
   const walkRadius = meta?.walk_radius_meters ?? DEFAULT_WALK_RADIUS_METERS;
 
   const emptyState = useMemo(
     () => (
-      <EmptyState lastScrape={meta?.last_scrape} filtersActive={filtersActive} onReset={handleReset} />
+      <EmptyState
+        lastScrape={meta?.last_scrape}
+        filtersActive={filtersActive}
+        hiddenBySeenFilter={hiddenBySeenFilter}
+        viewedFilter={viewedFilter}
+        onReset={handleReset}
+        onShowAll={handleShowAll}
+      />
     ),
-    [meta?.last_scrape, filtersActive, handleReset],
+    [meta?.last_scrape, filtersActive, hiddenBySeenFilter, viewedFilter, handleReset, handleShowAll],
   );
 
   const loadMoreButton = hasMore ? (
@@ -216,13 +261,21 @@ export default function HomePage() {
       filters={filters}
       onChange={setFilters}
       onReset={handleReset}
+      viewedFilter={viewedFilter}
+      onViewedFilterChange={handleViewedFilterChange}
+      seenInResults={seenInResults}
+      loadedCount={properties.length}
+      viewedHistoryCount={viewed.size}
+      onClearViewed={clearViewed}
       showStations={showStations}
       onToggleStations={setShowStations}
       meta={meta}
-      total={total}
+      total={displayTotal}
       loading={loading}
     />
   );
+
+  const anyFilterActive = filtersActive || viewedFilter !== "all";
 
   return (
     <div className="flex h-dvh flex-col">
@@ -238,7 +291,7 @@ export default function HomePage() {
             <p className="truncate text-xs text-slate-500">
               {loading
                 ? "Loading listings…"
-                : `${total} listing${total === 1 ? "" : "s"} within a 15-min walk of Metro & REM`}
+                : `${displayTotal} listing${displayTotal === 1 ? "" : "s"} within a 15-min walk of Metro & REM`}
             </p>
           </div>
         </div>
@@ -291,7 +344,7 @@ export default function HomePage() {
           >
             <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
             Filters
-            {filtersActive && <span className="h-2 w-2 rounded-full bg-brand-600" aria-hidden="true" />}
+            {anyFilterActive && <span className="h-2 w-2 rounded-full bg-brand-600" aria-hidden="true" />}
           </button>
         </div>
       </header>
@@ -304,22 +357,29 @@ export default function HomePage() {
         <main className="relative min-w-0 flex-1">
           {view === "map" ? (
             <MapView
-              properties={properties}
+              properties={visibleProperties}
               stations={stations}
               selectedId={selectedId}
               focus={focus}
               fitToken={fitToken}
               showStations={showStations}
               walkRadiusMeters={walkRadius}
+              viewedIds={viewed}
               onSelect={handleSelect}
+              onDeselect={handleDeselect}
+              onView={markViewed}
+              onUnview={markUnviewed}
             />
           ) : (
             <ListView
-              properties={properties}
+              properties={visibleProperties}
               loading={loading}
               selectedId={selectedId}
+              viewedIds={viewed}
               onSelect={handleSelect}
               onShowOnMap={handleShowOnMap}
+              onView={markViewed}
+              onUnview={markUnviewed}
               emptyState={emptyState}
               footer={loadMoreButton}
             />
@@ -385,7 +445,7 @@ export default function HomePage() {
                 onClick={() => setSidebarOpen(false)}
                 className="w-full rounded-xl bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-700"
               >
-                Show {total} listing{total === 1 ? "" : "s"}
+                Show {displayTotal} listing{displayTotal === 1 ? "" : "s"}
               </button>
             </div>
           </aside>

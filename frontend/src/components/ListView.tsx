@@ -1,9 +1,21 @@
 "use client";
 
-import { Bath, BedDouble, Car, ExternalLink, Footprints, ImageOff, MapPin } from "lucide-react";
+import {
+  Bath,
+  BedDouble,
+  Car,
+  Eye,
+  EyeOff,
+  ExternalLink,
+  Footprints,
+  ImageOff,
+  MapPin,
+  Ruler,
+} from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
 import type { Property } from "@/services/api";
 import {
+  formatArea,
   formatBathrooms,
   formatBedrooms,
   formatPrice,
@@ -15,8 +27,11 @@ interface ListViewProps {
   properties: Property[];
   loading: boolean;
   selectedId: number | null;
+  viewedIds: Set<string>;
   onSelect: (id: number) => void;
   onShowOnMap: (id: number) => void;
+  onView: (centrisId: string) => void;
+  onUnview: (centrisId: string) => void;
   emptyState: ReactNode;
   footer?: ReactNode;
 }
@@ -24,29 +39,39 @@ interface ListViewProps {
 interface PropertyCardProps {
   property: Property;
   selected: boolean;
+  viewed: boolean;
   onSelect: (id: number) => void;
   onShowOnMap: (id: number) => void;
+  onView: (centrisId: string) => void;
+  onUnview: (centrisId: string) => void;
 }
 
 const PropertyCard = memo(function PropertyCard({
   property,
   selected,
+  viewed,
   onSelect,
   onShowOnMap,
+  onView,
+  onUnview,
 }: PropertyCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const walk = formatWalk(property.walk_minutes, property.nearest_station_distance_m);
+  const area = formatArea(property.net_area_sqft);
   const showImage = Boolean(property.image_url) && !imageFailed;
-  const locationLine = [property.address, property.city && !property.address?.includes(property.city) ? property.city : null]
+  const locationLine = [
+    property.address,
+    property.city && !property.address?.includes(property.city) ? property.city : null,
+  ]
     .filter(Boolean)
     .join(", ");
 
   return (
     <article
       onClick={() => onSelect(property.id)}
-      className={`group flex flex-col overflow-hidden rounded-2xl border bg-white shadow-card transition hover:-translate-y-0.5 hover:shadow-lg ${
+      className={`group flex flex-col overflow-hidden rounded-2xl border bg-white shadow-card transition hover:-translate-y-0.5 hover:opacity-100 hover:shadow-lg ${
         selected ? "border-brand-500 ring-2 ring-brand-200" : "border-slate-200"
-      }`}
+      } ${viewed ? "opacity-70" : ""}`}
     >
       <div className="relative aspect-[4/3] w-full bg-slate-100">
         {showImage ? (
@@ -56,7 +81,7 @@ const PropertyCard = memo(function PropertyCard({
             loading="lazy"
             referrerPolicy="no-referrer"
             onError={() => setImageFailed(true)}
-            className="h-full w-full object-cover"
+            className={`h-full w-full object-cover transition ${viewed ? "grayscale" : ""}`}
           />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-400">
@@ -74,6 +99,12 @@ const PropertyCard = memo(function PropertyCard({
             Parking
           </div>
         )}
+        {viewed && (
+          <div className="absolute bottom-3 left-3 inline-flex items-center gap-1 rounded-full bg-slate-900/80 px-2.5 py-1 text-xs font-medium text-white">
+            <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+            Seen
+          </div>
+        )}
       </div>
 
       <div className="flex flex-1 flex-col gap-3 p-4">
@@ -88,7 +119,7 @@ const PropertyCard = memo(function PropertyCard({
           </div>
         </div>
 
-        <div className="flex items-center gap-4 text-sm text-slate-700">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-700">
           <span className="inline-flex items-center gap-1.5">
             <BedDouble className="h-4 w-4 text-slate-400" aria-hidden="true" />
             {formatBedrooms(property.bedrooms)}
@@ -97,6 +128,12 @@ const PropertyCard = memo(function PropertyCard({
             <Bath className="h-4 w-4 text-slate-400" aria-hidden="true" />
             {formatBathrooms(property.bathrooms)}
           </span>
+          {area && (
+            <span className="inline-flex items-center gap-1.5" title="Net area">
+              <Ruler className="h-4 w-4 text-slate-400" aria-hidden="true" />
+              {area}
+            </span>
+          )}
         </div>
 
         <div className="rounded-xl bg-slate-50 p-3">
@@ -119,28 +156,46 @@ const PropertyCard = memo(function PropertyCard({
           </div>
         </div>
 
-        <div className="mt-auto flex gap-2 pt-1">
-          <a
-            href={property.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(event) => event.stopPropagation()}
-            className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
-          >
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-            View on Centris
-          </a>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onShowOnMap(property.id);
-            }}
-            className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            <MapPin className="h-4 w-4" aria-hidden="true" />
-            Map
-          </button>
+        <div className="mt-auto space-y-2 pt-1">
+          <div className="flex gap-2">
+            <a
+              href={property.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(event) => {
+                event.stopPropagation();
+                onView(property.centris_id);
+              }}
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+            >
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              View on Centris
+            </a>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onShowOnMap(property.id);
+              }}
+              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <MapPin className="h-4 w-4" aria-hidden="true" />
+              Map
+            </button>
+          </div>
+          {viewed && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onUnview(property.centris_id);
+              }}
+              className="mx-auto flex items-center gap-1 text-xs text-slate-500 underline-offset-2 transition hover:text-slate-800 hover:underline"
+            >
+              <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
+              Mark as unseen
+            </button>
+          )}
         </div>
       </div>
     </article>
@@ -166,8 +221,11 @@ export default function ListView({
   properties,
   loading,
   selectedId,
+  viewedIds,
   onSelect,
   onShowOnMap,
+  onView,
+  onUnview,
   emptyState,
   footer,
 }: ListViewProps) {
@@ -195,8 +253,11 @@ export default function ListView({
             key={property.id}
             property={property}
             selected={property.id === selectedId}
+            viewed={viewedIds.has(property.centris_id)}
             onSelect={onSelect}
             onShowOnMap={onShowOnMap}
+            onView={onView}
+            onUnview={onUnview}
           />
         ))}
       </div>
