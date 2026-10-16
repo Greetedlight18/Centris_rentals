@@ -5,6 +5,7 @@
 html,
 body {
   height: 100%;
+  overscroll-behavior: none;
 }
 
 body {
@@ -21,6 +22,7 @@ body {
 .leaflet-container {
   font-family: inherit;
   background: #e5e7eb;
+  overscroll-behavior: none;
 }
 
 .leaflet-popup-content-wrapper {
@@ -97,6 +99,14 @@ body {
   background: var(--pill-color, #475569);
   color: #ffffff;
   transform: translate(-50%, calc(-100% - 7px)) scale(1.12);
+}
+
+/* Listings you have already opened */
+.price-pill.is-viewed {
+  background: #f1f5f9;
+  color: #94a3b8;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.15);
 }
 
 /* ---------- Station markers ---------- */
