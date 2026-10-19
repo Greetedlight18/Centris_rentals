@@ -17,6 +17,7 @@ import FilterSidebar from "@/components/FilterSidebar";
 import ListView from "@/components/ListView";
 import type { MapFocus } from "@/components/MapView";
 import { useViewedListings, type ViewedFilter } from "@/lib/viewed";
+import { locationKey } from "@/lib/grouping";
 import {
   DEFAULT_FILTERS,
   fetchMeta,
@@ -207,11 +208,18 @@ export default function HomePage() {
     setFitToken((token) => token + 1);
   }, []);
 
-  // The listing that is currently open stays visible even if the seen filter would hide it.
+  // The listing that is open (and every unit in its building) stays visible
+  // even if the seen filter would hide it, so the unit pager keeps working.
   const visibleProperties = useMemo(() => {
     if (viewedFilter === "all") return properties;
+    const selected =
+      selectedId === null ? null : (properties.find((property) => property.id === selectedId) ?? null);
+    const selectedKey = selected ? locationKey(selected.latitude, selected.longitude) : null;
     return properties.filter((property) => {
       if (property.id === selectedId) return true;
+      if (selectedKey !== null && locationKey(property.latitude, property.longitude) === selectedKey) {
+        return true;
+      }
       const seen = viewed.has(property.centris_id);
       return viewedFilter === "seen" ? seen : !seen;
     });
