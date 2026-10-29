@@ -1,16 +1,28 @@
 "use client";
 
 import {
+  Ban,
   Bath,
   BedDouble,
+  Calendar,
   Car,
+  Compass,
+  ExternalLink,
   Eye,
   EyeOff,
-  ExternalLink,
+  Flame,
   Footprints,
+  Heart,
   ImageOff,
   MapPin,
+  PawPrint,
   Ruler,
+  Shirt,
+  Snowflake,
+  Sofa,
+  Sparkles,
+  StickyNote,
+  TrendingDown,
 } from "lucide-react";
 import { memo, useState, type ReactNode } from "react";
 import type { Property } from "@/services/api";
@@ -19,46 +31,89 @@ import {
   formatBathrooms,
   formatBedrooms,
   formatPrice,
+  formatPricePerSqft,
   formatWalk,
+  isNewListing,
+  lineHexColor,
   lineLabel,
 } from "@/lib/format";
+import type { SavedNote } from "@/lib/saved";
+import type { CommuteEstimate } from "@/lib/transit";
 
 interface ListViewProps {
   properties: Property[];
   loading: boolean;
+  compact?: boolean;
   selectedId: number | null;
+  hoveredId: number | null;
   viewedIds: Set<string>;
-  onSelect: (id: number) => void;
+  favoriteIds: Set<string>;
+  hiddenIds: Set<string>;
+  notes: Record<string, SavedNote>;
+  commuteById: Map<number, CommuteEstimate>;
+  onOpenDetail: (id: number) => void;
+  onHover: (id: number | null) => void;
   onShowOnMap: (id: number) => void;
   onView: (centrisId: string) => void;
   onUnview: (centrisId: string) => void;
+  onToggleFavorite: (centrisId: string) => void;
+  onToggleHidden: (centrisId: string) => void;
   emptyState: ReactNode;
   footer?: ReactNode;
 }
 
 interface PropertyCardProps {
   property: Property;
+  compact: boolean;
   selected: boolean;
+  hovered: boolean;
   viewed: boolean;
-  onSelect: (id: number) => void;
+  favorited: boolean;
+  isHidden: boolean;
+  note: SavedNote | undefined;
+  commute: CommuteEstimate | undefined;
+  onOpenDetail: (id: number) => void;
+  onHover: (id: number | null) => void;
   onShowOnMap: (id: number) => void;
   onView: (centrisId: string) => void;
   onUnview: (centrisId: string) => void;
+  onToggleFavorite: (centrisId: string) => void;
+  onToggleHidden: (centrisId: string) => void;
 }
 
 const PropertyCard = memo(function PropertyCard({
   property,
+  compact,
   selected,
+  hovered,
   viewed,
-  onSelect,
+  favorited,
+  isHidden,
+  note,
+  commute,
+  onOpenDetail,
+  onHover,
   onShowOnMap,
   onView,
   onUnview,
+  onToggleFavorite,
+  onToggleHidden,
 }: PropertyCardProps) {
   const [imageFailed, setImageFailed] = useState(false);
   const walk = formatWalk(property.walk_minutes, property.nearest_station_distance_m);
   const area = formatArea(property.net_area_sqft);
-  const showImage = Boolean(property.image_url) && !imageFailed;
+  const ppsqft = formatPricePerSqft(property.price_per_sqft);
+  const isNew = isNewListing(property.first_seen_at);
+  const heroPhoto = property.image_url ?? property.photo_urls?.[0] ?? null;
+  const showImage = Boolean(heroPhoto) && !imageFailed;
+
+  const oldPrice =
+    property.previous_price && property.price && property.previous_price > property.price
+      ? property.previous_price
+      : property.initial_price && property.price && property.initial_price > property.price
+        ? property.initial_price
+        : null;
+
   const locationLine = [
     property.address,
     property.city && !property.address?.includes(property.city) ? property.city : null,
@@ -66,22 +121,92 @@ const PropertyCard = memo(function PropertyCard({
     .filter(Boolean)
     .join(", ");
 
+  const allLines =
+    property.reachable_lines && property.reachable_lines.length > 0
+      ? property.reachable_lines
+      : [property.station_line];
+
+  const badges: { label: string; icon: ReactNode; tone: string }[] = [];
+  if (property.available_immediately) {
+    badges.push({
+      label: "Immediate",
+      icon: <Calendar className="h-3 w-3" />,
+      tone: "bg-sky-50 text-sky-700 border-sky-200",
+    });
+  } else if (property.move_in_label) {
+    badges.push({
+      label: property.move_in_label,
+      icon: <Calendar className="h-3 w-3" />,
+      tone: "bg-slate-100 text-slate-700 border-slate-200",
+    });
+  }
+  if (property.pets_allowed === true) {
+    badges.push({
+      label: "Pets OK",
+      icon: <PawPrint className="h-3 w-3" />,
+      tone: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    });
+  }
+  if (property.parking_available) {
+    badges.push({
+      label: "Parking",
+      icon: <Car className="h-3 w-3" />,
+      tone: "bg-slate-100 text-slate-700 border-slate-200",
+    });
+  }
+  if (property.laundry_in_unit) {
+    badges.push({
+      label: "In-unit laundry",
+      icon: <Shirt className="h-3 w-3" />,
+      tone: "bg-indigo-50 text-indigo-700 border-indigo-200",
+    });
+  }
+  if (property.heating_included || property.hydro_included) {
+    badges.push({
+      label: property.hydro_included ? "Hydro incl." : "Heat incl.",
+      icon: <Flame className="h-3 w-3" />,
+      tone: "bg-amber-50 text-amber-800 border-amber-200",
+    });
+  }
+  if (property.furnished) {
+    badges.push({
+      label: "Furnished",
+      icon: <Sofa className="h-3 w-3" />,
+      tone: "bg-purple-50 text-purple-700 border-purple-200",
+    });
+  }
+  if (property.air_conditioning) {
+    badges.push({
+      label: "A/C",
+      icon: <Snowflake className="h-3 w-3" />,
+      tone: "bg-cyan-50 text-cyan-700 border-cyan-200",
+    });
+  }
+
   return (
     <article
-      onClick={() => onSelect(property.id)}
-      className={`group flex flex-col overflow-hidden rounded-2xl border bg-white shadow-card transition hover:-translate-y-0.5 hover:opacity-100 hover:shadow-lg ${
-        selected ? "border-brand-500 ring-2 ring-brand-200" : "border-slate-200"
-      } ${viewed ? "opacity-70" : ""}`}
+      onClick={() => onOpenDetail(property.id)}
+      onMouseEnter={() => onHover(property.id)}
+      onMouseLeave={() => onHover(null)}
+      className={`group flex cursor-pointer flex-col overflow-hidden rounded-2xl border bg-white shadow-card transition duration-150 hover:-translate-y-0.5 hover:opacity-100 hover:shadow-lg ${
+        selected
+          ? "border-brand-500 ring-2 ring-brand-200"
+          : hovered
+            ? "border-brand-400 ring-2 ring-brand-100"
+            : "border-slate-200/90"
+      } ${viewed && !selected && !favorited ? "opacity-80" : ""}`}
     >
-      <div className="relative aspect-[4/3] w-full bg-slate-100">
+      <div className="relative aspect-[16/10] w-full overflow-hidden bg-slate-100">
         {showImage ? (
           <img
-            src={property.image_url ?? ""}
+            src={heroPhoto ?? ""}
             alt={property.title ?? property.address ?? "Rental listing"}
             loading="lazy"
             referrerPolicy="no-referrer"
             onError={() => setImageFailed(true)}
-            className={`h-full w-full object-cover transition ${viewed ? "grayscale" : ""}`}
+            className={`h-full w-full object-cover transition duration-300 group-hover:scale-[1.03] ${
+              viewed && !favorited ? "grayscale-[45%] group-hover:grayscale-0" : ""
+            }`}
           />
         ) : (
           <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-400">
@@ -89,64 +214,163 @@ const PropertyCard = memo(function PropertyCard({
             <span className="text-xs">No photo available</span>
           </div>
         )}
-        <div className="absolute left-3 top-3 rounded-full bg-white/95 px-3 py-1 text-base font-bold text-slate-900 shadow">
-          {formatPrice(property.price)}
-          {property.price !== null && <span className="text-xs font-medium text-slate-500"> /mo</span>}
+
+        {/* Price badge */}
+        <div className="absolute left-3 top-3 flex items-baseline gap-1.5 rounded-full bg-white/95 px-3 py-1 shadow backdrop-blur-sm">
+          <span className="text-base font-bold text-slate-900">{formatPrice(property.price)}</span>
+          {property.price !== null && <span className="text-[11px] font-medium text-slate-500">/mo</span>}
+          {oldPrice !== null && (
+            <span className="text-[11px] font-medium text-slate-400 line-through">
+              {formatPrice(oldPrice)}
+            </span>
+          )}
         </div>
-        {property.parking_available && (
-          <div className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-slate-900/85 px-2.5 py-1 text-xs font-medium text-white">
-            <Car className="h-3.5 w-3.5" aria-hidden="true" />
-            Parking
+
+        {/* Favorite & Hide quick buttons */}
+        <div className="absolute right-3 top-3 flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleFavorite(property.centris_id);
+            }}
+            aria-label={favorited ? "Remove from favorites" : "Save to favorites"}
+            title={favorited ? "Saved to shortlist" : "Save to shortlist"}
+            className={`inline-flex h-8 w-8 items-center justify-center rounded-full shadow backdrop-blur-sm transition ${
+              favorited
+                ? "bg-rose-600 text-white"
+                : "bg-white/90 text-slate-700 hover:bg-white hover:text-rose-600"
+            }`}
+          >
+            <Heart className={`h-4 w-4 ${favorited ? "fill-current" : ""}`} />
+          </button>
+
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleHidden(property.centris_id);
+            }}
+            aria-label={isHidden ? "Unhide listing" : "Hide listing"}
+            title={isHidden ? "Restore listing" : "Dismiss / hide listing"}
+            className={`inline-flex h-8 w-8 items-center justify-center rounded-full shadow backdrop-blur-sm transition ${
+              isHidden
+                ? "bg-amber-600 text-white"
+                : "bg-white/85 text-slate-500 opacity-0 group-hover:opacity-100 hover:bg-white hover:text-slate-900 focus:opacity-100"
+            }`}
+          >
+            <Ban className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        {/* Bottom overlay tags */}
+        <div className="absolute bottom-2.5 left-3 right-3 flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
+            {isNew && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-brand-600/95 px-2.5 py-0.5 text-[11px] font-semibold text-white shadow">
+                <Sparkles className="h-3 w-3" />
+                New
+              </span>
+            )}
+            {property.price_drop && property.price_drop > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-600/95 px-2.5 py-0.5 text-[11px] font-semibold text-white shadow">
+                <TrendingDown className="h-3 w-3" />↓ {formatPrice(property.price_drop)}
+              </span>
+            )}
+            {viewed && !isNew && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-slate-900/75 px-2 py-0.5 text-[11px] font-medium text-white backdrop-blur-sm">
+                <Eye className="h-3 w-3" />
+                Seen
+              </span>
+            )}
           </div>
-        )}
-        {viewed && (
-          <div className="absolute bottom-3 left-3 inline-flex items-center gap-1 rounded-full bg-slate-900/80 px-2.5 py-1 text-xs font-medium text-white">
-            <Eye className="h-3.5 w-3.5" aria-hidden="true" />
-            Seen
-          </div>
-        )}
+
+          {property.photo_urls && property.photo_urls.length > 1 && (
+            <span className="rounded-full bg-slate-900/70 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white backdrop-blur-sm">
+              {property.photo_urls.length} photos
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-1 flex-col gap-3 p-4">
         <div>
-          {property.property_type && (
-            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              {property.property_type}
-            </div>
-          )}
-          <div className="mt-0.5 line-clamp-2 text-sm font-semibold text-slate-900">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              {property.property_type ?? "Rental"}
+            </span>
+            {ppsqft && (
+              <span className="shrink-0 text-[11px] font-semibold text-slate-500">{ppsqft}</span>
+            )}
+          </div>
+          <div className="mt-0.5 line-clamp-1 text-sm font-semibold text-slate-900">
             {locationLine || "Address not available"}
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-slate-700">
-          <span className="inline-flex items-center gap-1.5">
-            <BedDouble className="h-4 w-4 text-slate-400" aria-hidden="true" />
+        {/* Core specs */}
+        <div className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-xs font-medium text-slate-700">
+          <span className="inline-flex items-center gap-1">
+            <BedDouble className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
             {formatBedrooms(property.bedrooms)}
           </span>
-          <span className="inline-flex items-center gap-1.5">
-            <Bath className="h-4 w-4 text-slate-400" aria-hidden="true" />
+          <span className="inline-flex items-center gap-1">
+            <Bath className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
             {formatBathrooms(property.bathrooms)}
           </span>
           {area && (
-            <span className="inline-flex items-center gap-1.5" title="Net area">
-              <Ruler className="h-4 w-4 text-slate-400" aria-hidden="true" />
+            <span className="inline-flex items-center gap-1" title="Net area">
+              <Ruler className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
               {area}
             </span>
           )}
         </div>
 
-        <div className="rounded-xl bg-slate-50 p-3">
-          <div className="flex items-center gap-2 text-sm font-medium text-slate-900">
-            <span
-              className="inline-block h-3 w-3 shrink-0 rounded-full ring-2 ring-white"
-              style={{ backgroundColor: property.station_color }}
-              aria-hidden="true"
-            />
-            <span className="truncate">{property.station_name}</span>
+        {/* Amenity & Move-in tags */}
+        {badges.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {badges.slice(0, 4).map((b) => (
+              <span
+                key={b.label}
+                className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium ${b.tone}`}
+              >
+                {b.icon}
+                {b.label}
+              </span>
+            ))}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-600">
-            <span>{lineLabel(property.station_network, property.station_line)}</span>
+        )}
+
+        {/* Transit & Commute Box */}
+        <div className="rounded-xl bg-slate-50 p-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-1.5 text-xs font-semibold text-slate-900">
+              <div className="flex shrink-0 -space-x-1">
+                {allLines.slice(0, 4).map((ln) => (
+                  <span
+                    key={ln}
+                    title={ln === "REM" ? "REM" : `${ln} line`}
+                    className="inline-block h-3 w-3 rounded-full ring-2 ring-white"
+                    style={{ backgroundColor: lineHexColor(ln, property.station_color) }}
+                  />
+                ))}
+              </div>
+              <span className="truncate">{property.station_name}</span>
+            </div>
+
+            {commute && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-bold text-brand-800">
+                <Compass className="h-3 w-3" />~{commute.totalMinutes}m
+              </span>
+            )}
+          </div>
+
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
+            <span className="truncate">
+              {allLines.length > 1
+                ? `${allLines.join(" · ")} (${property.nearby_stations?.length ?? 1} stn)`
+                : lineLabel(property.station_network, property.station_line)}
+            </span>
             {walk && (
               <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
                 <Footprints className="h-3.5 w-3.5" aria-hidden="true" />
@@ -156,8 +380,40 @@ const PropertyCard = memo(function PropertyCard({
           </div>
         </div>
 
-        <div className="mt-auto space-y-2 pt-1">
-          <div className="flex gap-2">
+        {/* Personal Note preview */}
+        {note?.text && (
+          <div className="flex items-start gap-1.5 rounded-xl border border-amber-200/80 bg-amber-50/70 px-2.5 py-2 text-xs text-amber-900">
+            <StickyNote className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
+            <span className="line-clamp-2">{note.text}</span>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="mt-auto space-y-1.5 pt-1">
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenDetail(property.id);
+              }}
+              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-800 transition hover:border-brand-300 hover:bg-slate-50"
+            >
+              Details & Notes
+            </button>
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onShowOnMap(property.id);
+              }}
+              aria-label="Show on map"
+              title="Focus on map"
+              className="inline-flex items-center justify-center gap-1 rounded-xl border border-slate-200 px-2.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+            >
+              <MapPin className="h-3.5 w-3.5" />
+              {!compact && <span>Map</span>}
+            </button>
             <a
               href={property.url}
               target="_blank"
@@ -166,22 +422,11 @@ const PropertyCard = memo(function PropertyCard({
                 event.stopPropagation();
                 onView(property.centris_id);
               }}
-              className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-brand-700"
+              className="inline-flex items-center justify-center gap-1 rounded-xl bg-brand-600 px-3 py-2 text-xs font-semibold text-white transition hover:bg-brand-700"
             >
-              <ExternalLink className="h-4 w-4" aria-hidden="true" />
-              View on Centris
+              Centris
+              <ExternalLink className="h-3.5 w-3.5" />
             </a>
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                onShowOnMap(property.id);
-              }}
-              className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              <MapPin className="h-4 w-4" aria-hidden="true" />
-              Map
-            </button>
           </div>
           {viewed && (
             <button
@@ -190,9 +435,9 @@ const PropertyCard = memo(function PropertyCard({
                 event.stopPropagation();
                 onUnview(property.centris_id);
               }}
-              className="mx-auto flex items-center gap-1 text-xs text-slate-500 underline-offset-2 transition hover:text-slate-800 hover:underline"
+              className="mx-auto flex items-center gap-1 text-[11px] text-slate-400 underline-offset-2 transition hover:text-slate-700 hover:underline"
             >
-              <EyeOff className="h-3.5 w-3.5" aria-hidden="true" />
+              <EyeOff className="h-3 w-3" aria-hidden="true" />
               Mark as unseen
             </button>
           )}
@@ -205,13 +450,13 @@ const PropertyCard = memo(function PropertyCard({
 function SkeletonCard() {
   return (
     <div className="animate-pulse overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-card">
-      <div className="aspect-[4/3] w-full bg-slate-200" />
+      <div className="aspect-[16/10] w-full bg-slate-200" />
       <div className="space-y-3 p-4">
         <div className="h-3 w-1/3 rounded bg-slate-200" />
         <div className="h-4 w-3/4 rounded bg-slate-200" />
         <div className="h-4 w-1/2 rounded bg-slate-200" />
-        <div className="h-16 w-full rounded-xl bg-slate-100" />
-        <div className="h-9 w-full rounded-lg bg-slate-200" />
+        <div className="h-14 w-full rounded-xl bg-slate-100" />
+        <div className="h-9 w-full rounded-xl bg-slate-200" />
       </div>
     </div>
   );
@@ -220,20 +465,33 @@ function SkeletonCard() {
 export default function ListView({
   properties,
   loading,
+  compact = false,
   selectedId,
+  hoveredId,
   viewedIds,
-  onSelect,
+  favoriteIds,
+  hiddenIds,
+  notes,
+  commuteById,
+  onOpenDetail,
+  onHover,
   onShowOnMap,
   onView,
   onUnview,
+  onToggleFavorite,
+  onToggleHidden,
   emptyState,
   footer,
 }: ListViewProps) {
+  const gridClasses = compact
+    ? "grid grid-cols-1 gap-4 2xl:grid-cols-2"
+    : "grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4";
+
   if (loading && properties.length === 0) {
     return (
-      <div className="h-full overflow-y-auto p-4 sm:p-6">
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-          {Array.from({ length: 8 }, (_, index) => (
+      <div className="h-full overflow-y-auto p-4 sm:p-5">
+        <div className={gridClasses}>
+          {Array.from({ length: compact ? 6 : 8 }, (_, index) => (
             <SkeletonCard key={index} />
           ))}
         </div>
@@ -242,22 +500,35 @@ export default function ListView({
   }
 
   if (properties.length === 0) {
-    return <div className="flex h-full items-center justify-center overflow-y-auto p-6">{emptyState}</div>;
+    return (
+      <div className="flex h-full items-center justify-center overflow-y-auto p-6">
+        {emptyState}
+      </div>
+    );
   }
 
   return (
-    <div className="h-full overflow-y-auto p-4 sm:p-6">
-      <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+    <div className="h-full overflow-y-auto p-4 sm:p-5">
+      <div className={gridClasses}>
         {properties.map((property) => (
           <PropertyCard
             key={property.id}
             property={property}
+            compact={compact}
             selected={property.id === selectedId}
+            hovered={property.id === hoveredId}
             viewed={viewedIds.has(property.centris_id)}
-            onSelect={onSelect}
+            favorited={favoriteIds.has(property.centris_id)}
+            isHidden={hiddenIds.has(property.centris_id)}
+            note={notes[property.centris_id]}
+            commute={commuteById.get(property.id)}
+            onOpenDetail={onOpenDetail}
+            onHover={onHover}
             onShowOnMap={onShowOnMap}
             onView={onView}
             onUnview={onUnview}
+            onToggleFavorite={onToggleFavorite}
+            onToggleHidden={onToggleHidden}
           />
         ))}
       </div>

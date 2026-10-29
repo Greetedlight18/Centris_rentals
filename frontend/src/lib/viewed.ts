@@ -29,6 +29,7 @@ export interface ViewedListings {
   viewed: Set<string>;
   markViewed: (centrisId: string) => void;
   markUnviewed: (centrisId: string) => void;
+  mergeViewed: (ids: string[]) => void;
   clearViewed: () => void;
 }
 
@@ -82,9 +83,21 @@ export function useViewedListings(): ViewedListings {
     [commit],
   );
 
+  const mergeViewed = useCallback(
+    (ids: string[]) => {
+      if (ids.length === 0) return;
+      const next = new Set(current.current);
+      for (const id of ids) {
+        if (id) next.add(id);
+      }
+      commit(next);
+    },
+    [commit],
+  );
+
   const clearViewed = useCallback(() => {
     commit(new Set());
   }, [commit]);
 
-  return { viewed, markViewed, markUnviewed, clearViewed };
+  return { viewed, markViewed, markUnviewed, mergeViewed, clearViewed };
 }

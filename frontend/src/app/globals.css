@@ -9,7 +9,7 @@ body {
 }
 
 body {
-  @apply bg-slate-50 font-sans text-slate-900 antialiased;
+  @apply bg-slate-50 font-sans text-slate-900 antialiased selection:bg-brand-100 selection:text-brand-900;
 }
 
 /* ---------- Scrollbars ---------- */
@@ -18,23 +18,77 @@ body {
   scrollbar-color: #cbd5e1 transparent;
 }
 
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---------- Range inputs ---------- */
+input[type="range"] {
+  @apply h-1.5 cursor-pointer appearance-none rounded-full bg-slate-200;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #4f46e5;
+  border: 2px solid #ffffff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.3);
+  transition: transform 120ms ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+
 /* ---------- Leaflet overrides ---------- */
 .leaflet-container {
   font-family: inherit;
-  background: #e5e7eb;
+  background: #e2e8f0;
   overscroll-behavior: none;
+}
+
+.map-pick-mode .leaflet-container,
+.map-pick-mode .leaflet-interactive {
+  cursor: crosshair !important;
 }
 
 .leaflet-popup-content-wrapper {
   padding: 0;
   overflow: hidden;
-  border-radius: 16px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.25);
+  border-radius: 18px;
+  box-shadow: 0 14px 36px -4px rgba(15, 23, 42, 0.28), 0 4px 12px rgba(15, 23, 42, 0.12);
+  border: 1px solid rgba(226, 232, 240, 0.9);
 }
 
 .leaflet-popup-content {
   margin: 0;
   line-height: 1.35;
+}
+
+.leaflet-popup-close-button {
+  width: 26px !important;
+  height: 26px !important;
+  line-height: 24px !important;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.92) !important;
+  color: #334155 !important;
+  top: 8px !important;
+  right: 8px !important;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.2);
+  z-index: 20;
 }
 
 .leaflet-container a.popup-link {
@@ -46,10 +100,12 @@ body {
 }
 
 .leaflet-tooltip {
-  border: none;
-  border-radius: 10px;
-  padding: 6px 9px;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.25);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+  border-radius: 12px;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.18);
 }
 
 /* ---------- Property price markers ---------- */
@@ -65,6 +121,9 @@ body {
   position: absolute;
   left: 0;
   top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   transform: translate(-50%, calc(-100% - 7px));
   white-space: nowrap;
   padding: 3px 9px;
@@ -73,16 +132,16 @@ body {
   color: #0f172a;
   border: 2px solid var(--pill-color, #475569);
   font: 700 12px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.3);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.26);
   cursor: pointer;
-  transition: transform 120ms ease, background 120ms ease, color 120ms ease;
+  transition: transform 140ms cubic-bezier(0.16, 1, 0.3, 1), background 120ms ease, color 120ms ease, box-shadow 140ms ease;
 }
 
 .price-pill::after {
   content: "";
   position: absolute;
   left: 50%;
-  bottom: -7px;
+  bottom: -6px;
   width: 8px;
   height: 8px;
   background: inherit;
@@ -91,29 +150,42 @@ body {
   transform: translateX(-50%) rotate(45deg);
 }
 
-.price-pill:hover {
-  transform: translate(-50%, calc(-100% - 7px)) scale(1.08);
+.price-pill:hover,
+.price-pill.is-hovered {
+  transform: translate(-50%, calc(-100% - 9px)) scale(1.12);
+  box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.24), 0 8px 18px rgba(15, 23, 42, 0.32);
 }
 
 .price-pill.is-selected {
   background: var(--pill-color, #475569);
   color: #ffffff;
-  transform: translate(-50%, calc(-100% - 7px)) scale(1.12);
+  transform: translate(-50%, calc(-100% - 9px)) scale(1.14);
+  box-shadow: 0 0 0 4px rgba(15, 23, 42, 0.16), 0 8px 20px rgba(15, 23, 42, 0.35);
 }
 
 /* Listings you have already opened */
 .price-pill.is-viewed {
-  background: #f1f5f9;
+  background: #f8fafc;
   color: #94a3b8;
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.15);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
+}
+
+.price-pill .pill-drop {
+  color: #059669;
+  font-weight: 800;
+  font-size: 11px;
+}
+
+.price-pill.is-selected .pill-drop {
+  color: #a7f3d0;
 }
 
 /* Count badge for several units at the same address */
 .price-pill .pill-count {
   position: absolute;
-  top: -10px;
-  right: -10px;
+  top: -9px;
+  right: -9px;
   min-width: 18px;
   height: 18px;
   padding: 0 4px;
@@ -131,6 +203,22 @@ body {
   background: #94a3b8;
 }
 
+/* Favorite badge on map pill */
+.price-pill .pill-fav {
+  position: absolute;
+  top: -8px;
+  left: -8px;
+  width: 17px;
+  height: 17px;
+  border-radius: 9999px;
+  background: #e11d48;
+  color: #ffffff;
+  border: 2px solid #ffffff;
+  font: 800 9px/13px system-ui, sans-serif;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.35);
+}
+
 /* ---------- Station markers ---------- */
 .station-marker-icon {
   background: transparent;
@@ -144,10 +232,21 @@ body {
   width: 22px;
   height: 22px;
   border: 2px solid #ffffff;
-  box-shadow: 0 0 0 1.5px rgba(15, 23, 42, 0.55), 0 1px 4px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 1.5px rgba(15, 23, 42, 0.55), 0 2px 5px rgba(0, 0, 0, 0.32);
   color: #ffffff;
   font: 800 11px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
   text-shadow: 0 0 2px rgba(0, 0, 0, 0.75);
+  cursor: pointer;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+
+.station-marker:hover {
+  transform: scale(1.22);
+}
+
+.station-marker.is-active-station {
+  transform: scale(1.3);
+  box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.45), 0 4px 12px rgba(15, 23, 42, 0.4);
 }
 
 .station-metro {
@@ -158,4 +257,47 @@ body {
   width: 24px;
   height: 24px;
   border-radius: 7px;
+}
+
+/* ---------- Destination pin ---------- */
+.dest-marker-icon {
+  background: transparent;
+  border: none;
+}
+
+.dest-pin {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9999px;
+  background: #0f172a;
+  color: #ffffff;
+  border: 2.5px solid #ffffff;
+  box-shadow: 0 0 0 5px rgba(79, 70, 229, 0.32), 0 6px 16px rgba(15, 23, 42, 0.45);
+  font: 800 13px/1 system-ui, sans-serif;
+}
+
+
+/* ---------- Destination pin ---------- */
+.dest-marker-icon {
+  background: transparent;
+  border: none;
+}
+
+.dest-pin {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9999px;
+  background: #0f172a;
+  color: #ffffff;
+  border: 2.5px solid #ffffff;
+  box-shadow: 0 0 0 5px rgba(79, 70, 229, 0.32), 0 6px 16px rgba(15, 23, 42, 0.45);
+  font: 800 13px/1 system-ui, sans-serif;
 }

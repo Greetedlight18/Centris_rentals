@@ -24,7 +24,7 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from math import asin, cos, radians, sin, sqrt
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -208,6 +208,295 @@ def wait_for_database(max_attempts: int = 60) -> None:
             logger.info("Waiting for database (%s/%s): %s", attempt, max_attempts, exc)
             interruptible_sleep(2)
     raise RuntimeError("Database did not become reachable in time")
+
+
+SCHEMA_MIGRATION_STATEMENTS: list[str] = [
+    "SELECT pg_advisory_xact_lock(84729103)",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS initial_price NUMERIC(10, 2)",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS previous_price NUMERIC(10, 2)",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS price_changed_at TIMESTAMPTZ",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS net_area_sqft INTEGER",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS pets_allowed BOOLEAN",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS furnished BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS appliances_included BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS laundry_in_unit BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS heating_included BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS hydro_included BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS internet_included BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS air_conditioning BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS balcony BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS move_in_date DATE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS move_in_label TEXT",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS available_immediately BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS description_excerpt TEXT",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS photo_urls TEXT[] NOT NULL DEFAULT '{}'",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS reachable_lines TEXT[] NOT NULL DEFAULT '{}'",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS reachable_networks TEXT[] NOT NULL DEFAULT '{}'",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS reachable_station_ids INTEGER[] NOT NULL DEFAULT '{}'",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS nearby_stations JSONB NOT NULL DEFAULT '[]'::jsonb",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS detail_scraped_at TIMESTAMPTZ",
+    "ALTER TABLE properties ADD COLUMN IF NOT EXISTS detail_schema_version SMALLINT NOT NULL DEFAULT 1",
+    "CREATE INDEX IF NOT EXISTS idx_properties_first_seen_at ON properties (first_seen_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_properties_reachable_lines ON properties USING GIN (reachable_lines)",
+    "CREATE INDEX IF NOT EXISTS idx_properties_reachable_stations ON properties USING GIN (reachable_station_ids)",
+    """
+    CREATE TABLE IF NOT EXISTS property_price_history (
+        id          BIGSERIAL PRIMARY KEY,
+        property_id BIGINT         NOT NULL REFERENCES properties (id) ON DELETE CASCADE,
+        price       NUMERIC(10, 2) NOT NULL,
+        recorded_at TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_price_history_property ON property_price_history (property_id, recorded_at ASC)",
+    """
+    CREATE OR REPLACE FUNCTION track_property_price_before() RETURNS TRIGGER AS $$
+    BEGIN
+        IF TG_OP = 'INSERT' THEN
+            IF NEW.price IS NOT NULL AND NEW.initial_price IS NULL THEN
+                NEW.initial_price := NEW.price;
+            END IF;
+        ELSIF TG_OP = 'UPDATE' THEN
+            NEW.initial_price := COALESCE(OLD.initial_price, OLD.price, NEW.price);
+            IF NEW.price IS NOT NULL AND OLD.price IS NOT NULL AND NEW.price <> OLD.price THEN
+                NEW.previous_price   := OLD.price;
+                NEW.price_changed_at := NOW();
+            END IF;
+        END IF;
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_properties_price_before ON properties",
+    """
+    CREATE TRIGGER trg_properties_price_before
+        BEFORE INSERT OR UPDATE ON properties
+        FOR EACH ROW EXECUTE FUNCTION track_property_price_before()
+    """,
+    """
+    CREATE OR REPLACE FUNCTION track_property_price_after() RETURNS TRIGGER AS $$
+    BEGIN
+        IF NEW.price IS NOT NULL THEN
+            IF TG_OP = 'INSERT' THEN
+                INSERT INTO property_price_history (property_id, price, recorded_at)
+                VALUES (NEW.id, NEW.price, COALESCE(NEW.first_seen_at, NOW()));
+            ELSIF TG_OP = 'UPDATE' AND (OLD.price IS NULL OR NEW.price <> OLD.price) THEN
+                INSERT INTO property_price_history (property_id, price, recorded_at)
+                VALUES (NEW.id, NEW.price, NOW());
+            END IF;
+        END IF;
+        RETURN NULL;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_properties_price_after ON properties",
+    """
+    CREATE TRIGGER trg_properties_price_after
+        AFTER INSERT OR UPDATE OF price ON properties
+        FOR EACH ROW EXECUTE FUNCTION track_property_price_after()
+    """,
+    """
+    CREATE OR REPLACE FUNCTION compute_property_transit() RETURNS TRIGGER AS $$
+    DECLARE
+        v_station_id INTEGER;
+        v_distance   DOUBLE PRECISION;
+        v_speed_mpm  CONSTANT DOUBLE PRECISION := 80.0;
+        v_max_min    CONSTANT DOUBLE PRECISION := 15.0;
+        v_max_dist   CONSTANT DOUBLE PRECISION := 1200.0;
+    BEGIN
+        IF NEW.location IS NULL THEN
+            NEW.nearest_station_id         := NULL;
+            NEW.nearest_station_distance_m := NULL;
+            NEW.walk_minutes               := NULL;
+            NEW.within_15_min              := FALSE;
+            NEW.reachable_lines            := '{}';
+            NEW.reachable_networks         := '{}';
+            NEW.reachable_station_ids      := '{}';
+            NEW.nearby_stations            := '[]'::jsonb;
+            RETURN NEW;
+        END IF;
+
+        SELECT s.id, ST_Distance(s.location, NEW.location)
+          INTO v_station_id, v_distance
+          FROM stations s
+         WHERE s.is_operational = TRUE
+         ORDER BY s.location <-> NEW.location, s.id ASC
+         LIMIT 1;
+
+        NEW.nearest_station_id         := v_station_id;
+        NEW.nearest_station_distance_m := v_distance;
+        NEW.walk_minutes               := CASE WHEN v_distance IS NULL THEN NULL ELSE v_distance / v_speed_mpm END;
+        NEW.within_15_min              := COALESCE((v_distance / v_speed_mpm) <= v_max_min, FALSE);
+
+        IF NEW.within_15_min THEN
+            SELECT COALESCE(array_agg(sub.id ORDER BY sub.dist ASC, sub.id ASC), '{}')
+              INTO NEW.reachable_station_ids
+              FROM (
+                  SELECT s.id, ST_Distance(s.location, NEW.location) AS dist
+                    FROM stations s
+                   WHERE s.is_operational = TRUE
+                     AND ST_DWithin(s.location, NEW.location, v_max_dist + 5.0)
+                     AND ST_Distance(s.location, NEW.location) <= v_max_dist
+              ) sub;
+
+            SELECT COALESCE(array_agg(sub.line ORDER BY sub.min_dist ASC, sub.line ASC), '{}')
+              INTO NEW.reachable_lines
+              FROM (
+                  SELECT s.line, MIN(ST_Distance(s.location, NEW.location)) AS min_dist
+                    FROM stations s
+                   WHERE s.is_operational = TRUE
+                     AND ST_DWithin(s.location, NEW.location, v_max_dist + 5.0)
+                     AND ST_Distance(s.location, NEW.location) <= v_max_dist
+                   GROUP BY s.line
+              ) sub;
+
+            SELECT COALESCE(array_agg(sub.network ORDER BY sub.min_dist ASC, sub.network ASC), '{}')
+              INTO NEW.reachable_networks
+              FROM (
+                  SELECT s.network, MIN(ST_Distance(s.location, NEW.location)) AS min_dist
+                    FROM stations s
+                   WHERE s.is_operational = TRUE
+                     AND ST_DWithin(s.location, NEW.location, v_max_dist + 5.0)
+                     AND ST_Distance(s.location, NEW.location) <= v_max_dist
+                   GROUP BY s.network
+              ) sub;
+
+            SELECT COALESCE(
+                jsonb_agg(
+                    jsonb_build_object(
+                        'station_id', sub.station_id,
+                        'name', sub.name,
+                        'network', sub.network,
+                        'lines', sub.lines,
+                        'colors', sub.colors,
+                        'distance_m', ROUND(sub.dist::numeric, 1),
+                        'walk_minutes', ROUND((sub.dist / v_speed_mpm)::numeric, 1)
+                    )
+                    ORDER BY sub.dist ASC, sub.name ASC
+                ),
+                '[]'::jsonb
+            )
+              INTO NEW.nearby_stations
+              FROM (
+                  SELECT MIN(s.id) AS station_id,
+                         s.name,
+                         s.network,
+                         MIN(ST_Distance(s.location, NEW.location)) AS dist,
+                         array_agg(s.line ORDER BY s.id ASC) AS lines,
+                         array_agg(s.line_color ORDER BY s.id ASC) AS colors
+                    FROM stations s
+                   WHERE s.is_operational = TRUE
+                     AND ST_DWithin(s.location, NEW.location, v_max_dist + 5.0)
+                     AND ST_Distance(s.location, NEW.location) <= v_max_dist
+                   GROUP BY s.name, s.network
+              ) sub;
+        ELSE
+            NEW.reachable_lines       := '{}';
+            NEW.reachable_networks    := '{}';
+            NEW.reachable_station_ids := '{}';
+            NEW.nearby_stations       := '[]'::jsonb;
+        END IF;
+
+        RETURN NEW;
+    END;
+    $$ LANGUAGE plpgsql
+    """,
+    "DROP TRIGGER IF EXISTS trg_properties_transit ON properties",
+    """
+    CREATE TRIGGER trg_properties_transit
+        BEFORE INSERT OR UPDATE OF location ON properties
+        FOR EACH ROW EXECUTE FUNCTION compute_property_transit()
+    """,
+    "UPDATE properties SET initial_price = price WHERE initial_price IS NULL AND price IS NOT NULL",
+    """
+    INSERT INTO property_price_history (property_id, price, recorded_at)
+    SELECT p.id, p.price, p.first_seen_at
+      FROM properties p
+     WHERE p.price IS NOT NULL
+       AND NOT EXISTS (
+           SELECT 1 FROM property_price_history h WHERE h.property_id = p.id
+       )
+    """,
+    """
+    UPDATE properties
+       SET location = location
+     WHERE location IS NOT NULL
+       AND within_15_min = TRUE
+       AND cardinality(reachable_lines) = 0
+    """,
+    "DROP VIEW IF EXISTS v_properties_near_transit",
+    """
+    CREATE VIEW v_properties_near_transit AS
+    SELECT p.id,
+           p.centris_id,
+           p.title,
+           p.property_type,
+           p.price,
+           p.initial_price,
+           p.previous_price,
+           p.price_changed_at,
+           CASE
+               WHEN p.price IS NOT NULL AND p.previous_price IS NOT NULL AND p.price < p.previous_price
+                   THEN p.previous_price - p.price
+               WHEN p.price IS NOT NULL AND p.initial_price IS NOT NULL AND p.price < p.initial_price
+                   THEN p.initial_price - p.price
+               ELSE NULL
+           END AS price_drop,
+           CASE
+               WHEN p.price IS NOT NULL AND p.net_area_sqft IS NOT NULL AND p.net_area_sqft > 0
+                   THEN ROUND((p.price / p.net_area_sqft)::numeric, 2)
+               ELSE NULL
+           END AS price_per_sqft,
+           p.bedrooms,
+           p.bathrooms,
+           p.net_area_sqft,
+           p.parking_available,
+           p.pets_allowed,
+           p.furnished,
+           p.appliances_included,
+           p.laundry_in_unit,
+           p.heating_included,
+           p.hydro_included,
+           p.internet_included,
+           p.air_conditioning,
+           p.balcony,
+           p.move_in_date,
+           p.move_in_label,
+           p.available_immediately,
+           p.description_excerpt,
+           p.photo_urls,
+           p.address,
+           p.city,
+           ST_Y(p.location::geometry) AS latitude,
+           ST_X(p.location::geometry) AS longitude,
+           p.url,
+           p.image_url,
+           p.nearest_station_distance_m,
+           p.walk_minutes,
+           p.reachable_lines,
+           p.reachable_networks,
+           p.reachable_station_ids,
+           p.nearby_stations,
+           p.first_seen_at,
+           p.scraped_at,
+           s.id         AS station_id,
+           s.name       AS station_name,
+           s.network    AS station_network,
+           s.line       AS station_line,
+           s.line_color AS station_color
+      FROM properties p
+      JOIN stations s ON s.id = p.nearest_station_id
+     WHERE p.is_active = TRUE
+       AND p.within_15_min = TRUE
+    """,
+]
+
+
+def ensure_schema(conn: psycopg.Connection) -> None:
+    with conn.transaction():
+        with conn.cursor() as cur:
+            for statement in SCHEMA_MIGRATION_STATEMENTS:
+                cur.execute(statement)
+    logger.info("Database schema verified and up to date")
 
 
 def dump_debug(page: Optional[Page], label: str) -> None:
@@ -803,6 +1092,9 @@ class Card:
     image_url: Optional[str] = None
 
 
+DETAIL_SCHEMA_VERSION = 2
+
+
 @dataclass
 class DetailInfo:
     latitude: Optional[float] = None
@@ -811,6 +1103,20 @@ class DetailInfo:
     bedrooms: Optional[int] = None
     bathrooms: Optional[int] = None
     net_area_sqft: Optional[int] = None
+    pets_allowed: Optional[bool] = None
+    furnished: bool = False
+    appliances_included: bool = False
+    laundry_in_unit: bool = False
+    heating_included: bool = False
+    hydro_included: bool = False
+    internet_included: bool = False
+    air_conditioning: bool = False
+    balcony: bool = False
+    move_in_date: Optional[date] = None
+    move_in_label: Optional[str] = None
+    available_immediately: bool = False
+    description_excerpt: Optional[str] = None
+    photo_urls: list[str] = field(default_factory=list)
     fetched: bool = False
 
 
@@ -1099,6 +1405,191 @@ def extract_parking(soup: BeautifulSoup) -> Optional[bool]:
     return False if description_node is not None else None
 
 
+MONTH_LOOKUP: dict[str, int] = {
+    "jan": 1, "january": 1, "janvier": 1,
+    "feb": 2, "february": 2, "fev": 2, "fevrier": 2,
+    "mar": 3, "march": 3, "mars": 3,
+    "apr": 4, "april": 4, "avr": 4, "avril": 4,
+    "may": 5, "mai": 5,
+    "jun": 6, "june": 6, "juin": 6,
+    "jul": 7, "july": 7, "juil": 7, "juillet": 7,
+    "aug": 8, "august": 8, "aout": 8,
+    "sep": 9, "sept": 9, "september": 9, "septembre": 9,
+    "oct": 10, "october": 10, "octobre": 10,
+    "nov": 11, "november": 11, "novembre": 11,
+    "dec": 12, "december": 12, "decembre": 12,
+}
+
+
+def _safe_date(year: int, month: int, day: int) -> Optional[date]:
+    if not (2020 <= year <= 2100):
+        return None
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def parse_move_in(raw_value: str) -> tuple[Optional[date], Optional[str], bool]:
+    cleaned = clean_text(raw_value)
+    if not cleaned:
+        return None, None, False
+    norm = strip_accents(cleaned).lower()
+    if norm in NEGATIVE_VALUES:
+        return None, None, False
+
+    immediate = bool(
+        re.search(
+            r"\b(immediat\w*|available now|maintenant|upon signing|0\s*(?:day|jour)s?|des maintenant)\b",
+            norm,
+        )
+    )
+
+    parsed: Optional[date] = None
+    iso_match = re.search(r"\b(20\d{2})[-/](\d{1,2})[-/](\d{1,2})\b", norm)
+    if iso_match:
+        parsed = _safe_date(int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3)))
+
+    if parsed is None:
+        m_first = re.search(
+            r"\b([a-z]{3,10})\.?\s+(\d{1,2})(?:st|nd|rd|th|er)?,?\s*(20\d{2})\b",
+            norm,
+        )
+        if m_first and m_first.group(1) in MONTH_LOOKUP:
+            parsed = _safe_date(
+                int(m_first.group(3)), MONTH_LOOKUP[m_first.group(1)], int(m_first.group(2))
+            )
+
+    if parsed is None:
+        d_first = re.search(
+            r"\b(\d{1,2})(?:st|nd|rd|th|er)?\s+([a-z]{3,10})\.?,?\s*(20\d{2})\b",
+            norm,
+        )
+        if d_first and d_first.group(2) in MONTH_LOOKUP:
+            parsed = _safe_date(
+                int(d_first.group(3)), MONTH_LOOKUP[d_first.group(2)], int(d_first.group(1))
+            )
+
+    today = datetime.now(timezone.utc).date()
+    if parsed is not None and parsed <= today + timedelta(days=14):
+        immediate = True
+
+    if immediate and parsed is None:
+        label = "Immediate"
+    elif parsed is not None:
+        label = parsed.strftime("%b %-d, %Y") if sys.platform != "win32" else f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
+    else:
+        label = cleaned[:60]
+
+    return parsed, label, immediate
+
+
+def _mentions_positively(text: str, pattern: str) -> bool:
+    for match in re.finditer(pattern, text):
+        prefix = text[max(0, match.start() - 18) : match.start()]
+        if not any(neg in prefix for neg in ("no ", "not ", "non ", "sans ", "pas de ", "aucun", "without ", "exclu")):
+            return True
+    return False
+
+
+def extract_pets(caracs: list[tuple[str, str]], norm_desc: str) -> Optional[bool]:
+    for title, value in caracs:
+        is_excl = "exclus" in title
+        blob = f"{title} : {value}"
+        if any(
+            neg in blob
+            for neg in (
+                "no pets",
+                "pets not allowed",
+                "not allowed",
+                "animaux non",
+                "aucun animal",
+                "sans animaux",
+                "animaux interdits",
+                "animaux refuses",
+                "no dogs",
+                "no animals",
+            )
+        ):
+            return False
+        if is_excl and any(k in value for k in ("pet", "animaux", "chien", "chat", "dog", "cat")):
+            return False
+        if not is_excl:
+            if any(
+                pos in blob
+                for pos in (
+                    "pets allowed",
+                    "dogs allowed",
+                    "cats allowed",
+                    "pets permitted",
+                    "pet friendly",
+                    "pet-friendly",
+                    "animaux acceptes",
+                    "animaux permis",
+                    "chiens acceptes",
+                    "chats acceptes",
+                    "cats only",
+                    "small pets",
+                )
+            ):
+                return True
+            if title in ("pets", "animaux", "animal") and value in ("yes", "oui", "allowed", "permis", "acceptes"):
+                return True
+            if title in ("pets", "animaux", "animal") and value in ("no", "non", "none", "aucun"):
+                return False
+
+    if norm_desc:
+        if re.search(
+            r"\b(no pets|pets not allowed|not pet friendly|pet[- ]free|sans animaux|aucun animal|animaux non acceptes|animaux interdits|animaux refuses)\b",
+            norm_desc,
+        ):
+            return False
+        if re.search(
+            r"\b(pets? allowed|pets? welcome|pet[- ]friendly|dogs? allowed|cats? allowed|animaux acceptes|animaux permis|chats? acceptes|chiens? acceptes)\b",
+            norm_desc,
+        ):
+            return True
+    return None
+
+
+def extract_photos(soup: BeautifulSoup, html: str) -> list[str]:
+    seen: set[str] = set()
+    urls: list[str] = []
+
+    def add_candidate(raw: str) -> None:
+        if not raw or len(urls) >= 8:
+            return
+        cleaned = (
+            raw.replace("\\/", "/")
+            .replace("\\u0026", "&")
+            .replace("&amp;", "&")
+            .strip()
+        )
+        if not cleaned.startswith("http"):
+            cleaned = urljoin(BASE_URL, cleaned)
+        lower = cleaned.lower()
+        if any(skip in lower for skip in ("logo", "avatar", "broker", "courtier", "icon", "sprite", "placeholder")):
+            return
+        base_key = cleaned.split("&w=")[0].split("?w=")[0]
+        if base_key in seen:
+            return
+        seen.add(base_key)
+        urls.append(cleaned)
+
+    for match in re.finditer(r"https?:\\?/\\?/media\.centris\.ca\\?/medias\\?/[^\s\"'<>\\]+", html, re.I):
+        add_candidate(match.group(0))
+        if len(urls) >= 8:
+            return urls
+
+    for img in soup.select(".primary-photo img, .photo-viewer img, [class*='gallery'] img, [class*='photo'] img"):
+        for attr in ("src", "data-src", "data-lazy", "data-original"):
+            val = img.get(attr)
+            if val and not val.startswith("data:"):
+                add_candidate(val)
+                break
+    return urls
+
+
 def parse_detail(html: str) -> DetailInfo:
     soup = BeautifulSoup(html, "lxml")
     info = DetailInfo(fetched=True)
@@ -1116,29 +1607,125 @@ def parse_detail(html: str) -> DetailInfo:
     if bath_node is not None:
         info.bathrooms = parse_rooms(bath_node.get_text(" ", strip=True))
 
+    norm_caracs: list[tuple[str, str]] = []
     for container in soup.select(".carac-container"):
         title_node = container.select_one(".carac-title")
         value_node = container.select_one(".carac-value")
         if title_node is None or value_node is None:
             continue
-        title = strip_accents(clean_text(title_node.get_text(" ", strip=True))).lower()
-        value = clean_text(value_node.get_text(" ", strip=True))
+        raw_title = clean_text(title_node.get_text(" ", strip=True))
+        raw_value = clean_text(value_node.get_text(" ", strip=True))
+        title = strip_accents(raw_title).lower()
+        value_norm = strip_accents(raw_value).lower()
+        norm_caracs.append((title, value_norm))
+
         if info.bedrooms is None and ("bedroom" in title or "chambre" in title):
-            info.bedrooms = parse_rooms(value)
+            info.bedrooms = parse_rooms(raw_value)
         if info.bathrooms is None and ("bathroom" in title or "salle de bain" in title):
-            info.bathrooms = parse_rooms(value)
-        if info.net_area_sqft is None and ("net area" in title or "superficie nette" in title):
-            info.net_area_sqft = parse_area_sqft(value)
+            info.bathrooms = parse_rooms(raw_value)
+        if info.net_area_sqft is None and (
+            "net area" in title or "superficie nette" in title or "living area" in title or "superficie habitable" in title
+        ):
+            info.net_area_sqft = parse_area_sqft(raw_value)
+        if info.move_in_label is None and any(
+            k in title for k in ("move-in", "occupancy", "occupation", "availability", "disponibilite")
+        ):
+            m_date, m_label, m_imm = parse_move_in(raw_value)
+            info.move_in_date = m_date
+            info.move_in_label = m_label
+            info.available_immediately = m_imm
 
     if info.net_area_sqft is None:
         page_text = clean_text(soup.get_text(" ", strip=True))
         area_match = re.search(
-            r"(?:net area|superficie nette)\s*[:\-]?\s*(\d[\d\s.,]*\s*(?:sq\.?\s*ft|sqft|pi²|pi2|m²|m2))",
+            r"(?:net area|superficie nette|living area|superficie habitable)\s*[:\-]?\s*(\d[\d\s.,]*\s*(?:sq\.?\s*ft|sqft|pi²|pi2|m²|m2))",
             page_text,
             re.I,
         )
         if area_match:
             info.net_area_sqft = parse_area_sqft(area_match.group(1))
+
+    description_node = (
+        soup.select_one("[itemprop='description']")
+        or soup.select_one(".property-description")
+        or soup.select_one("#PropertyDescription")
+        or soup.select_one(".description")
+    )
+    raw_description = clean_text(description_node.get_text(" ", strip=True)) if description_node else ""
+    if raw_description:
+        info.description_excerpt = raw_description[:600]
+    norm_desc = strip_accents(raw_description).lower()
+
+    info.pets_allowed = extract_pets(norm_caracs, norm_desc)
+
+    inclusion_text = " ; ".join(
+        val
+        for title, val in norm_caracs
+        if "exclus" not in title and any(k in title for k in ("inclus", "included", "lease", "bail"))
+    )
+    feature_text = " ; ".join(
+        f"{title} {val}" for title, val in norm_caracs if "exclus" not in title
+    )
+
+    info.heating_included = bool(
+        re.search(r"\b(heating|heat|chauffage)\b", inclusion_text)
+        or re.search(r"\b(heating|heat|chauffage)\s+(?:is\s+)?(?:included|inclus)\b", norm_desc)
+    )
+    info.hydro_included = bool(
+        re.search(r"\b(electricity|hydro|electricite)\b", inclusion_text)
+        or re.search(r"\b(electricity|hydro|electricite)\s+(?:is\s+)?(?:included|inclus|incluse)\b", norm_desc)
+    )
+    info.internet_included = bool(
+        re.search(r"\b(internet|wi-fi|wifi)\b", inclusion_text)
+        or re.search(r"\b(internet|wi-fi|wifi)\s+(?:is\s+)?(?:included|inclus)\b", norm_desc)
+    )
+    info.appliances_included = bool(
+        re.search(
+            r"\b(refrigerator|fridge|stove|oven|dishwasher|appliances|refrigerateur|frigo|cuisiniere|lave-vaisselle|electromenagers?)\b",
+            feature_text,
+        )
+        or _mentions_positively(
+            norm_desc,
+            r"\b(appliances included|all appliances|5 appliances|electromenagers inclus|frigo et poele)\b",
+        )
+    )
+
+    has_laundry_words = bool(
+        re.search(r"\b(washer\s*(?:/|&|and)\s*dryer|in-unit laundry|laveuse\s*(?:/|&|et)\s*secheuse)\b", feature_text)
+        or ("washer" in inclusion_text and "dryer" in inclusion_text)
+        or ("laveuse" in inclusion_text and "secheuse" in inclusion_text)
+    )
+    shared_laundry_only = bool(
+        re.search(r"\b(shared laundry|common laundry|coin laundry|laundry room in building|buanderie commune)\b", feature_text)
+    )
+    info.laundry_in_unit = (has_laundry_words and not shared_laundry_only) or _mentions_positively(
+        norm_desc,
+        r"\b(in-unit laundry|washer and dryer in unit|washer/dryer in unit|washer & dryer included|laveuse et secheuse dans l'unite|laveuse-secheuse incluses?)\b",
+    )
+
+    if not re.search(r"\b(unfurnished|not furnished|non[- ]meuble)\b", feature_text):
+        if re.search(r"\b(fully furnished|furnished|entierement meuble|tout meuble|meuble)\b", feature_text):
+            info.furnished = True
+    if not info.furnished and not re.search(r"\b(unfurnished|not furnished|non[- ]meuble)\b", norm_desc):
+        if re.search(r"\b(fully furnished|rented furnished|entierement meuble|loue meuble)\b", norm_desc):
+            info.furnished = True
+
+    info.air_conditioning = bool(
+        re.search(
+            r"\b(air conditioning|wall-mounted a/c|central a/c|heat pump|climatisation|climatiseur|air climatise|thermopompe)\b",
+            feature_text,
+        )
+        or _mentions_positively(
+            norm_desc,
+            r"\b(air conditioning|wall[- ]mounted a/c|central air|heat pump|climatisation|air climatise|thermopompe)\b",
+        )
+    )
+    info.balcony = bool(
+        re.search(r"\b(balcony|balconies|terrace|private patio|balcon|terrasse)\b", feature_text)
+        or _mentions_positively(norm_desc, r"\b(private balcony|balcony|terrace|balcon|terrasse)\b")
+    )
+
+    info.photo_urls = extract_photos(soup, html)
     return info
 
 # ---------------------------------------------------------------------
@@ -1419,35 +2006,80 @@ def fetch_detail(session: BrowserSession, card: Card) -> DetailInfo:
 UPSERT_SQL = """
 INSERT INTO properties (
     centris_id, title, property_type, price, bedrooms, bathrooms, parking_available,
-    net_area_sqft, address, city, location, url, image_url, is_active, scraped_at,
-    detail_scraped_at
+    net_area_sqft, pets_allowed, furnished, appliances_included, laundry_in_unit,
+    heating_included, hydro_included, internet_included, air_conditioning, balcony,
+    move_in_date, move_in_label, available_immediately, description_excerpt, photo_urls,
+    address, city, location, url, image_url, is_active, scraped_at,
+    detail_scraped_at, detail_schema_version
 )
 VALUES (
     %(centris_id)s, %(title)s, %(property_type)s, %(price)s, %(bedrooms)s, %(bathrooms)s,
-    %(parking)s, %(net_area_sqft)s, %(address)s, %(city)s,
+    %(parking)s, %(net_area_sqft)s, %(pets_allowed)s, %(furnished)s, %(appliances_included)s,
+    %(laundry_in_unit)s, %(heating_included)s, %(hydro_included)s, %(internet_included)s,
+    %(air_conditioning)s, %(balcony)s, %(move_in_date)s::date, %(move_in_label)s,
+    %(available_immediately)s, %(description_excerpt)s, %(photo_urls)s::text[],
+    %(address)s, %(city)s,
     CASE WHEN %(lat)s::float8 IS NULL OR %(lon)s::float8 IS NULL THEN NULL
          ELSE ST_SetSRID(ST_MakePoint(%(lon)s::float8, %(lat)s::float8), 4326)::geography END,
     %(url)s, %(image_url)s, TRUE, NOW(),
-    CASE WHEN %(detail_fetched)s::boolean THEN NOW() ELSE NULL END
+    CASE WHEN %(detail_fetched)s::boolean THEN NOW() ELSE NULL END,
+    CASE WHEN %(detail_fetched)s::boolean THEN %(detail_schema_version)s::smallint ELSE 1 END
 )
 ON CONFLICT (centris_id) DO UPDATE SET
-    title             = COALESCE(EXCLUDED.title, properties.title),
-    property_type     = COALESCE(EXCLUDED.property_type, properties.property_type),
-    price             = COALESCE(EXCLUDED.price, properties.price),
-    bedrooms          = COALESCE(EXCLUDED.bedrooms, properties.bedrooms),
-    bathrooms         = COALESCE(EXCLUDED.bathrooms, properties.bathrooms),
-    parking_available = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
-                             THEN EXCLUDED.parking_available
-                             ELSE properties.parking_available END,
-    net_area_sqft     = COALESCE(EXCLUDED.net_area_sqft, properties.net_area_sqft),
-    address           = COALESCE(EXCLUDED.address, properties.address),
-    city              = COALESCE(EXCLUDED.city, properties.city),
-    location          = COALESCE(EXCLUDED.location, properties.location),
-    url               = EXCLUDED.url,
-    image_url         = COALESCE(EXCLUDED.image_url, properties.image_url),
-    is_active         = TRUE,
-    scraped_at        = NOW(),
-    detail_scraped_at = COALESCE(EXCLUDED.detail_scraped_at, properties.detail_scraped_at)
+    title                 = COALESCE(EXCLUDED.title, properties.title),
+    property_type         = COALESCE(EXCLUDED.property_type, properties.property_type),
+    price                 = COALESCE(EXCLUDED.price, properties.price),
+    bedrooms              = COALESCE(EXCLUDED.bedrooms, properties.bedrooms),
+    bathrooms             = COALESCE(EXCLUDED.bathrooms, properties.bathrooms),
+    parking_available     = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.parking_available
+                                 ELSE properties.parking_available END,
+    net_area_sqft         = COALESCE(EXCLUDED.net_area_sqft, properties.net_area_sqft),
+    pets_allowed          = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.pets_allowed
+                                 ELSE properties.pets_allowed END,
+    furnished             = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.furnished
+                                 ELSE properties.furnished END,
+    appliances_included   = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.appliances_included
+                                 ELSE properties.appliances_included END,
+    laundry_in_unit       = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.laundry_in_unit
+                                 ELSE properties.laundry_in_unit END,
+    heating_included      = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.heating_included
+                                 ELSE properties.heating_included END,
+    hydro_included        = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.hydro_included
+                                 ELSE properties.hydro_included END,
+    internet_included     = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.internet_included
+                                 ELSE properties.internet_included END,
+    air_conditioning      = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.air_conditioning
+                                 ELSE properties.air_conditioning END,
+    balcony               = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.balcony
+                                 ELSE properties.balcony END,
+    move_in_date          = COALESCE(EXCLUDED.move_in_date, properties.move_in_date),
+    move_in_label         = COALESCE(EXCLUDED.move_in_label, properties.move_in_label),
+    available_immediately = CASE WHEN EXCLUDED.detail_scraped_at IS NOT NULL
+                                 THEN EXCLUDED.available_immediately
+                                 ELSE properties.available_immediately END,
+    description_excerpt   = COALESCE(EXCLUDED.description_excerpt, properties.description_excerpt),
+    photo_urls            = CASE WHEN cardinality(EXCLUDED.photo_urls) > 0
+                                 THEN EXCLUDED.photo_urls
+                                 ELSE properties.photo_urls END,
+    address               = COALESCE(EXCLUDED.address, properties.address),
+    city                  = COALESCE(EXCLUDED.city, properties.city),
+    location              = COALESCE(EXCLUDED.location, properties.location),
+    url                   = EXCLUDED.url,
+    image_url             = COALESCE(EXCLUDED.image_url, properties.image_url),
+    is_active             = TRUE,
+    scraped_at            = NOW(),
+    detail_scraped_at     = COALESCE(EXCLUDED.detail_scraped_at, properties.detail_scraped_at),
+    detail_schema_version = GREATEST(EXCLUDED.detail_schema_version, properties.detail_schema_version)
 """
 CARD_UPDATE_SQL = """
 UPDATE properties
@@ -1483,6 +2115,14 @@ def upsert_listing(conn: psycopg.Connection, card: Card, detail: DetailInfo) -> 
         if geocoded:
             lat, lon = geocoded
             logger.info("Listing %s located via geocoding fallback", card.centris_id)
+
+    photos: list[str] = []
+    if card.image_url:
+        photos.append(card.image_url)
+    for photo in detail.photo_urls:
+        if photo not in photos and len(photos) < 8:
+            photos.append(photo)
+
     params = card_params(card)
     params.update(
         {
@@ -1490,7 +2130,23 @@ def upsert_listing(conn: psycopg.Connection, card: Card, detail: DetailInfo) -> 
             "bathrooms": detail.bathrooms if detail.bathrooms is not None else card.bathrooms,
             "parking": bool(detail.parking_available),
             "net_area_sqft": detail.net_area_sqft,
+            "pets_allowed": detail.pets_allowed,
+            "furnished": detail.furnished,
+            "appliances_included": detail.appliances_included,
+            "laundry_in_unit": detail.laundry_in_unit,
+            "heating_included": detail.heating_included,
+            "hydro_included": detail.hydro_included,
+            "internet_included": detail.internet_included,
+            "air_conditioning": detail.air_conditioning,
+            "balcony": detail.balcony,
+            "move_in_date": detail.move_in_date,
+            "move_in_label": detail.move_in_label,
+            "available_immediately": detail.available_immediately,
+            "description_excerpt": detail.description_excerpt,
+            "photo_urls": photos,
+            "image_url": card.image_url or (photos[0] if photos else None),
             "detail_fetched": detail.fetched,
+            "detail_schema_version": DETAIL_SCHEMA_VERSION,
             "lat": lat,
             "lon": lon,
         }
@@ -1541,9 +2197,10 @@ def process_cards(
         """
         SELECT centris_id,
                (location IS NOT NULL) AS has_location,
-               (detail_scraped_at IS NOT NULL) AS has_detail
+               (detail_scraped_at IS NOT NULL) AS has_detail,
+               COALESCE(detail_schema_version, 1) AS schema_version
           FROM properties
-         WHERE centris_id = ANY(%s)
+         WHERE centris_id = ANY(%s::text[])
         """,
         (ids,),
     ).fetchall()
@@ -1564,13 +2221,20 @@ def process_cards(
         for cid, row in existing.items()
         if not row["has_location"] or not row["has_detail"]
     ]
-    targets = (new_cards + retry_cards)[:MAX_DETAILS_PER_RUN]
-    deferred = len(new_cards) + len(retry_cards) - len(targets)
+    upgrade_cards = [
+        cards[cid]
+        for cid, row in existing.items()
+        if row["has_location"] and row["has_detail"] and row["schema_version"] < DETAIL_SCHEMA_VERSION
+    ]
+    candidates = new_cards + retry_cards + upgrade_cards
+    targets = candidates[:MAX_DETAILS_PER_RUN]
+    deferred = len(candidates) - len(targets)
     logger.info(
-        "Detail pages to fetch: %s (%s new, %s missing coordinates, %s deferred to next run)",
+        "Detail pages to fetch: %s (%s new, %s missing coords, %s enriching details, %s deferred)",
         len(targets),
         len(new_cards),
         len(retry_cards),
+        len(upgrade_cards),
         max(0, deferred),
     )
     if deferred > 0:
@@ -1765,6 +2429,7 @@ def main() -> None:
     try:
         wait_for_database()
         with connect_db() as conn:
+            ensure_schema(conn)
             conn.execute(
                 """
                 UPDATE scrape_runs

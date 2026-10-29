@@ -1,7 +1,8 @@
 -- =====================================================================
 -- Montreal Rentals near Metro / REM
 -- Runs once, on first initialisation of the pgdata volume.
--- To re-seed:  docker compose down -v && docker compose up --build
+-- Note: backend and scraper also run idempotent schema migrations on
+-- startup so existing volumes upgrade automatically without data loss.
 -- =====================================================================
 
 CREATE EXTENSION IF NOT EXISTS postgis;
@@ -36,9 +37,27 @@ CREATE TABLE IF NOT EXISTS properties (
     title                      TEXT,
     property_type              TEXT,
     price                      NUMERIC(10, 2),
+    initial_price              NUMERIC(10, 2),
+    previous_price             NUMERIC(10, 2),
+    price_changed_at           TIMESTAMPTZ,
     bedrooms                   SMALLINT,
     bathrooms                  SMALLINT,
-    parking_available         BOOLEAN     NOT NULL DEFAULT FALSE,
+    net_area_sqft              INTEGER,
+    parking_available          BOOLEAN     NOT NULL DEFAULT FALSE,
+    pets_allowed               BOOLEAN,
+    furnished                  BOOLEAN     NOT NULL DEFAULT FALSE,
+    appliances_included        BOOLEAN     NOT NULL DEFAULT FALSE,
+    laundry_in_unit            BOOLEAN     NOT NULL DEFAULT FALSE,
+    heating_included           BOOLEAN     NOT NULL DEFAULT FALSE,
+    hydro_included             BOOLEAN     NOT NULL DEFAULT FALSE,
+    internet_included          BOOLEAN     NOT NULL DEFAULT FALSE,
+    air_conditioning           BOOLEAN     NOT NULL DEFAULT FALSE,
+    balcony                    BOOLEAN     NOT NULL DEFAULT FALSE,
+    move_in_date               DATE,
+    move_in_label              TEXT,
+    available_immediately      BOOLEAN     NOT NULL DEFAULT FALSE,
+    description_excerpt        TEXT,
+    photo_urls                 TEXT[]      NOT NULL DEFAULT '{}',
     address                    TEXT,
     city                       TEXT,
     location                   GEOGRAPHY(Point, 4326),
@@ -48,16 +67,38 @@ CREATE TABLE IF NOT EXISTS properties (
     nearest_station_distance_m DOUBLE PRECISION,
     walk_minutes               DOUBLE PRECISION,
     within_15_min              BOOLEAN     NOT NULL DEFAULT FALSE,
+    reachable_lines            TEXT[]      NOT NULL DEFAULT '{}',
+    reachable_networks         TEXT[]      NOT NULL DEFAULT '{}',
+    reachable_station_ids      INTEGER[]   NOT NULL DEFAULT '{}',
+    nearby_stations            JSONB       NOT NULL DEFAULT '[]'::jsonb,
     is_active                  BOOLEAN     NOT NULL DEFAULT TRUE,
     first_seen_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    scraped_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    scraped_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    detail_scraped_at          TIMESTAMPTZ,
+    detail_schema_version      SMALLINT    NOT NULL DEFAULT 1
 );
 
-CREATE INDEX IF NOT EXISTS idx_properties_location   ON properties USING GIST (location);
-CREATE INDEX IF NOT EXISTS idx_properties_price      ON properties (price);
-CREATE INDEX IF NOT EXISTS idx_properties_bedrooms   ON properties (bedrooms);
-CREATE INDEX IF NOT EXISTS idx_properties_active     ON properties (is_active, within_15_min);
-CREATE INDEX IF NOT EXISTS idx_properties_scraped_at ON properties (scraped_at DESC);
+CREATE INDEX IF NOT EXISTS idx_properties_location           ON properties USING GIST (location);
+CREATE INDEX IF NOT EXISTS idx_properties_price              ON properties (price);
+CREATE INDEX IF NOT EXISTS idx_properties_bedrooms           ON properties (bedrooms);
+CREATE INDEX IF NOT EXISTS idx_properties_active             ON properties (is_active, within_15_min);
+CREATE INDEX IF NOT EXISTS idx_properties_scraped_at         ON properties (scraped_at DESC);
+CREATE INDEX IF NOT EXISTS idx_properties_first_seen_at      ON properties (first_seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_properties_reachable_lines    ON properties USING GIN (reachable_lines);
+CREATE INDEX IF NOT EXISTS idx_properties_reachable_stations ON properties USING GIN (reachable_station_ids);
+
+-- ---------------------------------------------------------------------
+-- property_price_history (tracks rent changes across scrape runs)
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS property_price_history (
+    id          BIGSERIAL PRIMARY KEY,
+    property_id BIGINT         NOT NULL REFERENCES properties (id) ON DELETE CASCADE,
+    price       NUMERIC(10, 2) NOT NULL,
+    recorded_at TIMESTAMPTZ    NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_history_property
+    ON property_price_history (property_id, recorded_at ASC);
 
 -- ---------------------------------------------------------------------
 -- scrape_runs (audit log for the scraper)
@@ -74,9 +115,55 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
 );
 
 -- ---------------------------------------------------------------------
+-- Price tracking triggers
+-- ---------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION track_property_price_before() RETURNS TRIGGER AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.price IS NOT NULL AND NEW.initial_price IS NULL THEN
+            NEW.initial_price := NEW.price;
+        END IF;
+    ELSIF TG_OP = 'UPDATE' THEN
+        NEW.initial_price := COALESCE(OLD.initial_price, OLD.price, NEW.price);
+        IF NEW.price IS NOT NULL AND OLD.price IS NOT NULL AND NEW.price <> OLD.price THEN
+            NEW.previous_price   := OLD.price;
+            NEW.price_changed_at := NOW();
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_properties_price_before ON properties;
+CREATE TRIGGER trg_properties_price_before
+    BEFORE INSERT OR UPDATE ON properties
+    FOR EACH ROW EXECUTE FUNCTION track_property_price_before();
+
+CREATE OR REPLACE FUNCTION track_property_price_after() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.price IS NOT NULL THEN
+        IF TG_OP = 'INSERT' THEN
+            INSERT INTO property_price_history (property_id, price, recorded_at)
+            VALUES (NEW.id, NEW.price, COALESCE(NEW.first_seen_at, NOW()));
+        ELSIF TG_OP = 'UPDATE' AND (OLD.price IS NULL OR NEW.price <> OLD.price) THEN
+            INSERT INTO property_price_history (property_id, price, recorded_at)
+            VALUES (NEW.id, NEW.price, NOW());
+        END IF;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_properties_price_after ON properties;
+CREATE TRIGGER trg_properties_price_after
+    AFTER INSERT OR UPDATE OF price ON properties
+    FOR EACH ROW EXECUTE FUNCTION track_property_price_after();
+
+-- ---------------------------------------------------------------------
 -- Proximity trigger: on every insert/update of a property's location,
 -- compute nearest operational station, straight-line distance (m),
--- walking minutes (80 m/min ~ 4.8 km/h) and the 15-minute flag (<= 1200 m).
+-- walking minutes (80 m/min ~ 4.8 km/h), the 15-minute flag (<= 1200 m),
+-- and all reachable transfer lines / stations within 15 minutes.
 -- ---------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION compute_property_transit() RETURNS TRIGGER AS $$
 DECLARE
@@ -84,12 +171,17 @@ DECLARE
     v_distance   DOUBLE PRECISION;
     v_speed_mpm  CONSTANT DOUBLE PRECISION := 80.0;
     v_max_min    CONSTANT DOUBLE PRECISION := 15.0;
+    v_max_dist   CONSTANT DOUBLE PRECISION := 1200.0;
 BEGIN
     IF NEW.location IS NULL THEN
         NEW.nearest_station_id         := NULL;
         NEW.nearest_station_distance_m := NULL;
         NEW.walk_minutes               := NULL;
         NEW.within_15_min              := FALSE;
+        NEW.reachable_lines            := '{}';
+        NEW.reachable_networks         := '{}';
+        NEW.reachable_station_ids      := '{}';
+        NEW.nearby_stations            := '[]'::jsonb;
         RETURN NEW;
     END IF;
 
@@ -97,13 +189,83 @@ BEGIN
       INTO v_station_id, v_distance
       FROM stations s
      WHERE s.is_operational = TRUE
-     ORDER BY s.location <-> NEW.location
+     ORDER BY s.location <-> NEW.location, s.id ASC
      LIMIT 1;
 
     NEW.nearest_station_id         := v_station_id;
     NEW.nearest_station_distance_m := v_distance;
     NEW.walk_minutes               := CASE WHEN v_distance IS NULL THEN NULL ELSE v_distance / v_speed_mpm END;
     NEW.within_15_min              := COALESCE((v_distance / v_speed_mpm) <= v_max_min, FALSE);
+
+    IF NEW.within_15_min THEN
+        SELECT COALESCE(array_agg(sub.id ORDER BY sub.dist ASC, sub.id ASC), '{}')
+          INTO NEW.reachable_station_ids
+          FROM (
+              SELECT s.id, ST_Distance(s.location, NEW.location) AS dist
+                FROM stations s
+               WHERE s.is_operational = TRUE
+                 AND ST_DWithin(s.location, NEW.location, v_max_dist + 5.0)
+                 AND ST_Distance(s.location, NEW.location) <= v_max_dist
+          ) sub;
+
+        SELECT COALESCE(array_agg(sub.line ORDER BY sub.min_dist ASC, sub.line ASC), '{}')
+          INTO NEW.reachable_lines
+          FROM (
+              SELECT s.line, MIN(ST_Distance(s.location, NEW.location)) AS min_dist
+                FROM stations s
+               WHERE s.is_operational = TRUE
+                 AND ST_DWithin(s.location, NEW.location, v_max_dist + 5.0)
+                 AND ST_Distance(s.location, NEW.location) <= v_max_dist
+               GROUP BY s.line
+          ) sub;
+
+        SELECT COALESCE(array_agg(sub.network ORDER BY sub.min_dist ASC, sub.network ASC), '{}')
+          INTO NEW.reachable_networks
+          FROM (
+              SELECT s.network, MIN(ST_Distance(s.location, NEW.location)) AS min_dist
+                FROM stations s
+               WHERE s.is_operational = TRUE
+                 AND ST_DWithin(s.location, NEW.location, v_max_dist + 5.0)
+                 AND ST_Distance(s.location, NEW.location) <= v_max_dist
+               GROUP BY s.network
+          ) sub;
+
+        SELECT COALESCE(
+            jsonb_agg(
+                jsonb_build_object(
+                    'station_id', sub.station_id,
+                    'name', sub.name,
+                    'network', sub.network,
+                    'lines', sub.lines,
+                    'colors', sub.colors,
+                    'distance_m', ROUND(sub.dist::numeric, 1),
+                    'walk_minutes', ROUND((sub.dist / v_speed_mpm)::numeric, 1)
+                )
+                ORDER BY sub.dist ASC, sub.name ASC
+            ),
+            '[]'::jsonb
+        )
+          INTO NEW.nearby_stations
+          FROM (
+              SELECT MIN(s.id) AS station_id,
+                     s.name,
+                     s.network,
+                     MIN(ST_Distance(s.location, NEW.location)) AS dist,
+                     array_agg(s.line ORDER BY s.id ASC) AS lines,
+                     array_agg(s.line_color ORDER BY s.id ASC) AS colors
+                FROM stations s
+               WHERE s.is_operational = TRUE
+                 AND ST_DWithin(s.location, NEW.location, v_max_dist + 5.0)
+                 AND ST_Distance(s.location, NEW.location) <= v_max_dist
+               GROUP BY s.name, s.network
+          ) sub;
+    ELSE
+        NEW.reachable_lines       := '{}';
+        NEW.reachable_networks    := '{}';
+        NEW.reachable_station_ids := '{}';
+        NEW.nearby_stations       := '[]'::jsonb;
+    END IF;
+
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -116,15 +278,46 @@ CREATE TRIGGER trg_properties_transit
 -- ---------------------------------------------------------------------
 -- Convenience view for the API
 -- ---------------------------------------------------------------------
-CREATE OR REPLACE VIEW v_properties_near_transit AS
+DROP VIEW IF EXISTS v_properties_near_transit;
+CREATE VIEW v_properties_near_transit AS
 SELECT p.id,
        p.centris_id,
        p.title,
        p.property_type,
        p.price,
+       p.initial_price,
+       p.previous_price,
+       p.price_changed_at,
+       CASE
+           WHEN p.price IS NOT NULL AND p.previous_price IS NOT NULL AND p.price < p.previous_price
+               THEN p.previous_price - p.price
+           WHEN p.price IS NOT NULL AND p.initial_price IS NOT NULL AND p.price < p.initial_price
+               THEN p.initial_price - p.price
+           ELSE NULL
+       END AS price_drop,
+       CASE
+           WHEN p.price IS NOT NULL AND p.net_area_sqft IS NOT NULL AND p.net_area_sqft > 0
+               THEN ROUND((p.price / p.net_area_sqft)::numeric, 2)
+           ELSE NULL
+       END AS price_per_sqft,
        p.bedrooms,
        p.bathrooms,
+       p.net_area_sqft,
        p.parking_available,
+       p.pets_allowed,
+       p.furnished,
+       p.appliances_included,
+       p.laundry_in_unit,
+       p.heating_included,
+       p.hydro_included,
+       p.internet_included,
+       p.air_conditioning,
+       p.balcony,
+       p.move_in_date,
+       p.move_in_label,
+       p.available_immediately,
+       p.description_excerpt,
+       p.photo_urls,
        p.address,
        p.city,
        ST_Y(p.location::geometry) AS latitude,
@@ -133,6 +326,11 @@ SELECT p.id,
        p.image_url,
        p.nearest_station_distance_m,
        p.walk_minutes,
+       p.reachable_lines,
+       p.reachable_networks,
+       p.reachable_station_ids,
+       p.nearby_stations,
+       p.first_seen_at,
        p.scraped_at,
        s.id         AS station_id,
        s.name       AS station_name,
