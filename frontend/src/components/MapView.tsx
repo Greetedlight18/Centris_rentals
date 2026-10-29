@@ -486,7 +486,7 @@ const LocationMarker = memo(function LocationMarker({
           )}
 
           {heroPhoto && (
-            <div className="relative">
+            <div className="relative overflow-hidden bg-slate-100">
               <img
                 key={active.id}
                 src={heroPhoto}
@@ -497,31 +497,20 @@ const LocationMarker = memo(function LocationMarker({
                   event.currentTarget.style.display = "none";
                 }}
               />
-              <div className="absolute bottom-2 left-2.5 flex flex-wrap gap-1">
+              <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-950/45 via-transparent to-slate-950/20" />
+              <div className="absolute bottom-2.5 left-2.5 flex flex-wrap gap-1">
                 {isNew && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-indigo-600/95 px-2 py-0.5 text-[10px] font-bold text-white shadow">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-indigo-600 px-2 py-0.5 text-[10px] font-bold text-white shadow-sm">
                     <Sparkles className="h-2.5 w-2.5" /> New
                   </span>
                 )}
                 {active.price_drop && active.price_drop > 0 && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-600/95 px-2 py-0.5 text-[10px] font-bold text-white shadow">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-bold text-white shadow-sm">
                     <TrendingDown className="h-2.5 w-2.5" />↓ {formatPrice(active.price_drop)}
                   </span>
                 )}
               </div>
-              <div className="absolute bottom-2 right-2.5 flex gap-1">
-                <button
-                  type="button"
-                  onClick={() => onToggleFavorite(active.centris_id)}
-                  aria-label={activeFavorited ? "Remove from favorites" : "Save to favorites"}
-                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full shadow backdrop-blur-sm transition ${
-                    activeFavorited
-                      ? "bg-rose-600 text-white"
-                      : "bg-white/90 text-slate-700 hover:text-rose-600"
-                  }`}
-                >
-                  <Heart className={`h-3.5 w-3.5 ${activeFavorited ? "fill-current" : ""}`} />
-                </button>
+              <div className="absolute bottom-2.5 right-2.5 flex gap-1.5">
                 <button
                   type="button"
                   onClick={() => {
@@ -529,10 +518,22 @@ const LocationMarker = memo(function LocationMarker({
                     onToggleHidden(active.centris_id);
                   }}
                   aria-label="Hide listing"
-                  title="Hide listing"
-                  className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-slate-600 shadow backdrop-blur-sm transition hover:text-slate-900"
+                  title="Dismiss listing"
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/90 text-slate-600 shadow-sm backdrop-blur-md transition hover:bg-white hover:text-slate-900"
                 >
                   <Ban className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onToggleFavorite(active.centris_id)}
+                  aria-label={activeFavorited ? "Remove from favorites" : "Save to favorites"}
+                  className={`inline-flex h-7 w-7 items-center justify-center rounded-full shadow-sm backdrop-blur-md transition ${
+                    activeFavorited
+                      ? "bg-rose-600 text-white"
+                      : "bg-white/90 text-slate-700 hover:bg-white hover:text-rose-600"
+                  }`}
+                >
+                  <Heart className={`h-3.5 w-3.5 ${activeFavorited ? "fill-current" : ""}`} />
                 </button>
               </div>
             </div>
@@ -1142,9 +1143,10 @@ export default function MapView({
         preferCanvas
       >
         <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-          url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-          maxZoom={19}
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+          subdomains="abcd"
+          maxZoom={20}
         />
 
         <ContainerResizeObserver />

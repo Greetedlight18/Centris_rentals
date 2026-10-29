@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Ban,
   Bath,
@@ -158,7 +158,6 @@ export default function PropertyDetailDrawer({
     setNoteDraft(note?.text ?? "");
   }, [property?.centris_id]);
 
-  // Keep draft synced if updated externally
   useEffect(() => {
     setNoteDraft(note?.text ?? "");
   }, [note?.text]);
@@ -238,70 +237,80 @@ export default function PropertyDetailDrawer({
           },
         ];
 
-  const amenities = [
+  const amenities: {
+    name: string;
+    status: string;
+    state: "yes" | "no" | "unknown";
+    icon: ReactNode;
+  }[] = [
     {
-      label:
+      name: "Pets",
+      status:
         property.pets_allowed === true
-          ? "Pets allowed"
+          ? "Allowed"
           : property.pets_allowed === false
-            ? "No pets"
-            : "Pets unspecified",
-      active: property.pets_allowed === true,
-      negative: property.pets_allowed === false,
+            ? "No"
+            : "—",
+      state:
+        property.pets_allowed === true
+          ? "yes"
+          : property.pets_allowed === false
+            ? "no"
+            : "unknown",
       icon: <PawPrint className="h-4 w-4" />,
     },
     {
-      label: property.parking_available ? "Parking available" : "No parking listed",
-      active: property.parking_available,
-      negative: false,
+      name: "Parking",
+      status: property.parking_available ? "Yes" : "—",
+      state: property.parking_available ? "yes" : "unknown",
       icon: <Car className="h-4 w-4" />,
     },
     {
-      label: property.laundry_in_unit ? "In-unit laundry" : "Laundry not listed",
-      active: property.laundry_in_unit,
-      negative: false,
+      name: "In-unit laundry",
+      status: property.laundry_in_unit ? "Yes" : "—",
+      state: property.laundry_in_unit ? "yes" : "unknown",
       icon: <Shirt className="h-4 w-4" />,
     },
     {
-      label: property.appliances_included ? "Appliances included" : "Appliances not listed",
-      active: property.appliances_included,
-      negative: false,
+      name: "Appliances",
+      status: property.appliances_included ? "Included" : "—",
+      state: property.appliances_included ? "yes" : "unknown",
       icon: <Sparkles className="h-4 w-4" />,
     },
     {
-      label: property.heating_included ? "Heating included" : "Heating excluded / unlisted",
-      active: property.heating_included,
-      negative: false,
+      name: "Heating",
+      status: property.heating_included ? "Included" : "—",
+      state: property.heating_included ? "yes" : "unknown",
       icon: <Flame className="h-4 w-4" />,
     },
     {
-      label: property.hydro_included ? "Hydro / electricity incl." : "Hydro excluded / unlisted",
-      active: property.hydro_included,
-      negative: false,
+      name: "Hydro",
+      status: property.hydro_included ? "Included" : "—",
+      state: property.hydro_included ? "yes" : "unknown",
       icon: <Zap className="h-4 w-4" />,
     },
     {
-      label: property.internet_included ? "Internet included" : "Internet unlisted",
-      active: property.internet_included,
-      negative: false,
+      name: "Internet",
+      status: property.internet_included ? "Included" : "—",
+      state: property.internet_included ? "yes" : "unknown",
       icon: <Wifi className="h-4 w-4" />,
     },
     {
-      label: property.air_conditioning ? "Air conditioning" : "A/C unlisted",
-      active: property.air_conditioning,
-      negative: false,
+      name: "Air conditioning",
+      status: property.air_conditioning ? "Yes" : "—",
+      state: property.air_conditioning ? "yes" : "unknown",
       icon: <Snowflake className="h-4 w-4" />,
     },
     {
-      label: property.balcony ? "Balcony / terrace" : "Balcony unlisted",
-      active: property.balcony,
-      negative: false,
+      name: "Balcony / patio",
+      status: property.balcony ? "Yes" : "—",
+      state: property.balcony ? "yes" : "unknown",
       icon: <Sun className="h-4 w-4" />,
     },
     {
-      label: property.furnished ? "Furnished" : "Unfurnished",
-      active: property.furnished,
-      negative: false,
+      name: "Furnished",
+      status: property.furnished ? "Yes" : "No",
+      state: property.furnished ? "yes" : "unknown",
       icon: <Sofa className="h-4 w-4" />,
     },
   ];
@@ -320,15 +329,15 @@ export default function PropertyDetailDrawer({
       aria-label="Listing details"
     >
       <div
-        className="absolute inset-0 bg-slate-900/45 backdrop-blur-[2px] transition-opacity"
+        className="backdrop-fade absolute inset-0 bg-slate-900/45 backdrop-blur-[2px]"
         onClick={onClose}
       />
 
-      <aside className="relative z-10 flex h-full w-full max-w-lg flex-col bg-white shadow-2xl">
+      <aside className="drawer-slide-right relative z-10 flex h-full w-full max-w-[540px] flex-col bg-white shadow-2xl">
         {/* Top bar */}
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-5 py-3.5">
+        <div className="flex shrink-0 items-center justify-between border-b border-slate-200/80 px-5 py-3.5">
           <div className="min-w-0">
-            <div className="text-xs font-medium uppercase tracking-wider text-slate-400">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
               Centris #{property.centris_id}
             </div>
             <div className="truncate text-sm font-semibold text-slate-900">
@@ -370,7 +379,7 @@ export default function PropertyDetailDrawer({
               onClick={handleShare}
               aria-label="Copy link to listing"
               title="Copy shareable link"
-              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 px-3 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
             >
               {copied ? (
                 <>
@@ -416,8 +425,8 @@ export default function PropertyDetailDrawer({
               />
             ) : (
               <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-slate-400">
-                <ImageOff className="h-9 w-9" />
-                <span className="text-xs">No photo available</span>
+                <ImageOff className="h-9 w-9 stroke-[1.5]" />
+                <span className="text-xs font-medium">No photo available</span>
               </div>
             )}
 
@@ -439,7 +448,7 @@ export default function PropertyDetailDrawer({
                 >
                   <ChevronRight className="h-4 w-4" />
                 </button>
-                <div className="absolute bottom-3 right-3 rounded-full bg-slate-900/75 px-2.5 py-1 text-xs font-semibold tabular-nums text-white backdrop-blur-sm">
+                <div className="absolute bottom-3 right-3 rounded-full bg-slate-900/75 px-3 py-1 text-xs font-semibold tabular-nums text-white backdrop-blur-sm">
                   {photoIndex + 1} / {photos.length}
                 </div>
               </>
@@ -461,12 +470,12 @@ export default function PropertyDetailDrawer({
             </div>
           </div>
 
-          <div className="space-y-6 p-5">
+          <div className="space-y-6 p-5 sm:p-6">
             {/* Price & Address */}
             <div>
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold tracking-tight text-slate-900">
+                  <span className="text-2xl font-extrabold tracking-tight text-slate-900">
                     {formatPrice(property.price)}
                   </span>
                   {property.price !== null && (
@@ -479,14 +488,14 @@ export default function PropertyDetailDrawer({
                   )}
                 </div>
                 {ppsqft && (
-                  <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700">
+                  <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-semibold tabular-nums text-slate-700">
                     {ppsqft}
                   </span>
                 )}
               </div>
 
-              <div className="mt-1.5 text-base font-medium text-slate-800">
-                {locationLine || "Address not available"}
+              <div className="mt-1.5 text-base font-semibold text-slate-800">
+                {locationLine || "Address on Centris"}
               </div>
               {ageLabel && (
                 <div className="mt-1 flex items-center gap-1.5 text-xs text-slate-500">
@@ -498,7 +507,7 @@ export default function PropertyDetailDrawer({
                       <button
                         type="button"
                         onClick={() => onUnview(property.centris_id)}
-                        className="inline-flex items-center gap-1 text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline"
+                        className="inline-flex items-center gap-1 font-medium text-slate-500 underline-offset-2 hover:text-slate-800 hover:underline"
                       >
                         <EyeOff className="h-3 w-3" />
                         Mark unseen
@@ -509,35 +518,39 @@ export default function PropertyDetailDrawer({
               )}
             </div>
 
-            {/* Specs pills */}
+            {/* Key Specs (2x2 spacious cards so nothing clips) */}
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                  <BedDouble className="h-3.5 w-3.5" /> Bedrooms
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                  <BedDouble className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Bedrooms</span>
                 </div>
                 <div className="mt-1 text-sm font-bold text-slate-900">
                   {formatBedrooms(property.bedrooms)}
                 </div>
               </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                  <Bath className="h-3.5 w-3.5" /> Bathrooms
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                  <Bath className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Bathrooms</span>
                 </div>
                 <div className="mt-1 text-sm font-bold text-slate-900">
                   {formatBathrooms(property.bathrooms)}
                 </div>
               </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                  <Ruler className="h-3.5 w-3.5" /> Size
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                  <Ruler className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Area</span>
                 </div>
                 <div className="mt-1 text-sm font-bold text-slate-900">{area ?? "Unlisted"}</div>
               </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
-                <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                  <Calendar className="h-3.5 w-3.5" /> Move-in
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50/70 p-3">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-slate-500">
+                  <Calendar className="h-3.5 w-3.5 text-slate-400" />
+                  <span>Move-in</span>
                 </div>
-                <div className="mt-1 truncate text-sm font-bold text-slate-900">
+                <div className="mt-1 text-sm font-bold leading-snug text-slate-900">
                   {property.available_immediately
                     ? "Immediate"
                     : property.move_in_label ?? "See Centris"}
@@ -547,10 +560,10 @@ export default function PropertyDetailDrawer({
 
             {/* Commute breakdown if destination active */}
             {destination && commute && (
-              <div className="rounded-2xl border border-brand-200 bg-brand-50/60 p-4">
+              <div className="rounded-2xl border border-brand-200/80 bg-brand-50/60 p-4">
                 <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-brand-700">
-                    <Compass className="h-4 w-4" />
+                  <div className="flex items-center gap-2 text-xs font-semibold text-brand-800">
+                    <Compass className="h-4 w-4 text-brand-600" />
                     Commute to {destination.label}
                   </div>
                   <span className="rounded-full bg-brand-600 px-2.5 py-0.5 text-xs font-bold text-white">
@@ -562,17 +575,17 @@ export default function PropertyDetailDrawer({
             )}
 
             {/* Personal Note Editor */}
-            <div className="rounded-2xl border border-amber-200/80 bg-amber-50/50 p-4">
+            <div className="rounded-2xl border border-amber-200/80 bg-amber-50/45 p-4">
               <div className="mb-2 flex items-center justify-between">
                 <label
                   htmlFor="listing-personal-note"
-                  className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-900"
+                  className="flex items-center gap-1.5 text-xs font-semibold text-amber-950"
                 >
                   <StickyNote className="h-4 w-4 text-amber-600" />
                   Personal Notes
                 </label>
                 {note?.updatedAt && (
-                  <span className="text-[11px] text-amber-700/80">Saved automatically</span>
+                  <span className="text-[11px] font-medium text-amber-700/80">Auto-saved</span>
                 )}
               </div>
               <textarea
@@ -585,13 +598,13 @@ export default function PropertyDetailDrawer({
                   onSaveNote(property.centris_id, val);
                 }}
                 placeholder="Write private notes (e.g. sunny balcony, ask about hydro, visited Sat)…"
-                className="w-full resize-y rounded-xl border border-amber-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-200"
+                className="w-full resize-y rounded-xl border border-amber-200/90 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-200/70"
               />
             </div>
 
             {/* Nearby Transit Stations */}
             <div>
-              <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <h3 className="mb-2.5 text-xs font-semibold text-slate-700">
                 Stations within 15-min walk ({nearbyHubs.length})
               </h3>
               <div className="space-y-2">
@@ -603,7 +616,7 @@ export default function PropertyDetailDrawer({
                       onSelectStation(hub.name);
                       onClose();
                     }}
-                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-left transition hover:border-brand-300 hover:bg-slate-50"
+                    className="flex w-full items-center justify-between gap-3 rounded-xl border border-slate-200/90 bg-white px-3.5 py-2.5 text-left transition hover:border-brand-300 hover:bg-slate-50"
                   >
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
@@ -640,11 +653,9 @@ export default function PropertyDetailDrawer({
 
             {/* Price History */}
             {(historyPoints.length > 1 || (property.price_drop && property.price_drop > 0)) && (
-              <div className="rounded-2xl border border-slate-200 p-4">
+              <div className="rounded-2xl border border-slate-200/90 p-4">
                 <div className="mb-2 flex items-center justify-between">
-                  <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-                    Price History
-                  </h3>
+                  <h3 className="text-xs font-semibold text-slate-700">Price History</h3>
                   {loadingHistory && <span className="text-xs text-slate-400">Loading…</span>}
                 </div>
                 <PriceSparkline points={historyPoints} />
@@ -657,7 +668,11 @@ export default function PropertyDetailDrawer({
                           day: "numeric",
                           year: "numeric",
                         })}
-                        {idx === 0 ? " (First seen)" : idx === historyPoints.length - 1 ? " (Current)" : ""}
+                        {idx === 0
+                          ? " (First seen)"
+                          : idx === historyPoints.length - 1
+                            ? " (Current)"
+                            : ""}
                       </span>
                       <span className="font-semibold text-slate-900">{formatPrice(pt.price)}</span>
                     </li>
@@ -666,35 +681,48 @@ export default function PropertyDetailDrawer({
               </div>
             )}
 
-            {/* Amenities & Inclusions */}
+            {/* Amenities & Inclusions (Clean Two-Column Key/Value Rows — Zero Truncation) */}
             <div>
-              <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
+              <h3 className="mb-2.5 text-xs font-semibold text-slate-700">
                 Inclusions & Features
               </h3>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 {amenities.map((item) => (
                   <div
-                    key={item.label}
-                    className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs font-medium ${
-                      item.active
-                        ? "border-emerald-200 bg-emerald-50/70 text-emerald-900"
-                        : item.negative
-                          ? "border-rose-200 bg-rose-50/60 text-rose-800"
-                          : "border-slate-100 bg-slate-50/60 text-slate-400"
+                    key={item.name}
+                    className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs ${
+                      item.state === "yes"
+                        ? "border-emerald-200/90 bg-emerald-50/50 text-slate-900"
+                        : item.state === "no"
+                          ? "border-rose-200/80 bg-rose-50/40 text-slate-700"
+                          : "border-slate-200/70 bg-slate-50/50 text-slate-500"
                     }`}
                   >
-                    <span
-                      className={
-                        item.active
-                          ? "text-emerald-600"
-                          : item.negative
-                            ? "text-rose-500"
-                            : "text-slate-300"
-                      }
-                    >
-                      {item.icon}
+                    <span className="flex items-center gap-2 whitespace-nowrap font-medium">
+                      <span
+                        className={
+                          item.state === "yes"
+                            ? "text-emerald-600"
+                            : item.state === "no"
+                              ? "text-rose-500"
+                              : "text-slate-400"
+                        }
+                      >
+                        {item.icon}
+                      </span>
+                      <span>{item.name}</span>
                     </span>
-                    <span className="truncate">{item.label}</span>
+                    <span
+                      className={`shrink-0 rounded-md px-2 py-0.5 text-[11px] font-semibold ${
+                        item.state === "yes"
+                          ? "bg-emerald-100 text-emerald-800"
+                          : item.state === "no"
+                            ? "bg-rose-100 text-rose-800"
+                            : "text-slate-400"
+                      }`}
+                    >
+                      {item.status}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -703,10 +731,8 @@ export default function PropertyDetailDrawer({
             {/* Description Excerpt */}
             {property.description_excerpt && (
               <div>
-                <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wider text-slate-500">
-                  Listing Excerpt
-                </h3>
-                <p className="rounded-xl bg-slate-50 p-3.5 text-xs leading-relaxed text-slate-700">
+                <h3 className="mb-1.5 text-xs font-semibold text-slate-700">Listing Excerpt</h3>
+                <p className="rounded-xl border border-slate-200/70 bg-slate-50/70 p-3.5 text-xs leading-relaxed text-slate-700">
                   {property.description_excerpt}
                   {property.description_excerpt.length >= 595 ? "…" : ""}
                 </p>
@@ -716,7 +742,7 @@ export default function PropertyDetailDrawer({
         </div>
 
         {/* Sticky Footer */}
-        <div className="flex shrink-0 items-center gap-2.5 border-t border-slate-200 bg-white px-5 py-3.5">
+        <div className="flex shrink-0 items-center gap-2.5 border-t border-slate-200/80 bg-white px-5 py-3.5">
           <button
             type="button"
             onClick={() => {
@@ -742,4 +768,3 @@ export default function PropertyDetailDrawer({
     </div>
   );
 }
-
