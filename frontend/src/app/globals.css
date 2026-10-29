@@ -139,6 +139,10 @@ input[type="range"]::-moz-range-thumb {
   overscroll-behavior: none;
 }
 
+.leaflet-tile-pane {
+  filter: saturate(0.62) contrast(0.96) brightness(1.03);
+}
+
 .leaflet-control-zoom {
   border: 1px solid rgba(226, 232, 240, 0.95) !important;
   border-radius: 14px !important;
