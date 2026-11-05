@@ -83,5 +83,13 @@ services:
     volumes:
       - ./scraper/debug:/app/debug
 
+  cloudflared:
+      image: cloudflare/cloudflared:latest
+      container_name: rentals-cloudflared
+      command: tunnel --no-autoupdate run
+      environment:
+        - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+      restart: unless-stopped
+      
 volumes:
   pgdata:
